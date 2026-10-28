@@ -162,6 +162,21 @@ h1, h2, h3 {
 
 .still-pose { display: grid; gap: 8px; margin-top: 12px; }
 
+.skeleton-view {
+  width: 100%;
+  height: 320px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #161310;
+  touch-action: none;
+}
+
+.skeleton-view canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .stage-copy {
   position: absolute;
   inset: 0;

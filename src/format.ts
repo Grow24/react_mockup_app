@@ -1,4 +1,4 @@
-import type { NumericRange } from './types'
+import type { InferencePerformance, NumericRange } from './types'
 
 export function formatClock(ms: number) {
   const total = Math.max(0, Math.floor(ms / 1000))
@@ -33,6 +33,10 @@ export function formatRange(range: NumericRange | undefined, unit: string) {
 
 export function formatPercent(score: number) {
   return `${Math.round(score * 100)}%`
+}
+
+export function formatPerformance(sample: InferencePerformance) {
+  return `${sample.processedFps} processed/s · ${Math.round(sample.latencyMs)} ms latency · ${sample.droppedFrames} dropped`
 }
 
 export function formatSetting(value: number | string | undefined, unit = '') {

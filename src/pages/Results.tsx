@@ -1,12 +1,17 @@
 import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
-import { formatPercent, formatWhen } from '../format'
+import { SkeletonView } from '../components/SkeletonView'
+import { formatPercent, formatPerformance, formatWhen } from '../format'
 import { useSession } from '../session/context'
 import type { AiSnapshot } from '../types'
 
 function poseReady(snapshot: AiSnapshot | undefined) {
   return (snapshot?.pose.filter((point) => point.visibility >= 0.5).length ?? 0) >= 4
+}
+
+function worldReady(snapshot: AiSnapshot | undefined) {
+  return (snapshot?.worldPose?.filter((point) => point.z != null && point.visibility >= 0.5).length ?? 0) >= 4
 }
 
 export function Results() {
@@ -36,8 +41,8 @@ export function Results() {
           {backend === 'online'
             ? ' The session link in the header opens the same files in another browser.'
             : ' The server is offline, so these stay in this browser.'}{' '}
-          A photo keeps the boxes and skeleton from the moment it was taken. A video keeps the last
-          analyzed frame.
+          A photo keeps the boxes, the 2D skeleton, and the 3D pose from the moment it was taken. A
+          video keeps the last analyzed frame, including how fast that pass was.
         </p>
       </div>
 
@@ -103,6 +108,23 @@ export function Results() {
                     snapshot={selected.snapshot}
                   />
                 </div>
+              </div>
+            ) : null}
+
+            {selected.snapshot ? (
+              <div className="still-pose">
+                <p className="muted">Drag the view to turn the skeleton.</p>
+                {worldReady(selected.snapshot) && selected.snapshot.worldPose ? (
+                  <SkeletonView pose={selected.snapshot.worldPose} />
+                ) : (
+                  <p className="muted">
+                    No 3D pose stored with this capture. Turn AI on, then take a photo while a person
+                    is in frame.
+                  </p>
+                )}
+                {selected.snapshot.performance ? (
+                  <p className="muted">{formatPerformance(selected.snapshot.performance)} at capture.</p>
+                ) : null}
               </div>
             ) : null}
 

@@ -264,6 +264,9 @@ export async function saveAsset(
         source: 'mediapipe-pose',
         coordinateSpace: 'normalized-image',
         pose: asset.snapshot.pose,
+        ...(asset.snapshot.worldPose && asset.snapshot.worldPose.length > 0
+          ? { worldPose: asset.snapshot.worldPose }
+          : {}),
       }
     : null
 

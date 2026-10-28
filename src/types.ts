@@ -2,12 +2,21 @@ import type {
   AiSnapshot,
   Box,
   Detection,
+  InferencePerformance,
   MediaKind,
   NumericRange,
   PosePoint,
 } from '../shared/contracts.ts'
 
-export type { AiSnapshot, Box, Detection, MediaKind, NumericRange, PosePoint }
+export type {
+  AiSnapshot,
+  Box,
+  Detection,
+  InferencePerformance,
+  MediaKind,
+  NumericRange,
+  PosePoint,
+}
 
 export type MediaAsset = {
   id: string

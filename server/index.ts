@@ -110,14 +110,57 @@ function asCameras(value: unknown): CameraRecord[] | undefined {
   return cameras
 }
 
+function asPose(value: unknown, requireZ: boolean) {
+  if (!Array.isArray(value) || value.length > 64) return undefined
+  const points = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return undefined
+    const point = item as Partial<AiSnapshot['pose'][number]>
+    if (typeof point.x !== 'number' || typeof point.y !== 'number' || typeof point.visibility !== 'number') {
+      return undefined
+    }
+    if (requireZ && typeof point.z !== 'number') return undefined
+    const next: AiSnapshot['pose'][number] = {
+      x: point.x,
+      y: point.y,
+      visibility: point.visibility,
+    }
+    if (typeof point.z === 'number') next.z = point.z
+    points.push(next)
+  }
+  return points
+}
+
+function asPerformance(value: unknown) {
+  if (!value || typeof value !== 'object') return undefined
+  const sample = value as Partial<NonNullable<AiSnapshot['performance']>>
+  if (
+    typeof sample.processedFps !== 'number' ||
+    typeof sample.latencyMs !== 'number' ||
+    typeof sample.droppedFrames !== 'number'
+  ) {
+    return undefined
+  }
+  return {
+    processedFps: sample.processedFps,
+    latencyMs: sample.latencyMs,
+    droppedFrames: sample.droppedFrames,
+  }
+}
+
 function asSnapshot(value: unknown): AiSnapshot | null | undefined {
   if (value == null) return null
   if (!value || typeof value !== 'object') return undefined
   const snapshot = value as Partial<AiSnapshot>
   if (typeof snapshot.at !== 'number' || typeof snapshot.inferenceMs !== 'number') return undefined
-  if (!Array.isArray(snapshot.detections) || !Array.isArray(snapshot.pose)) return undefined
-  if (snapshot.detections.length > 20 || snapshot.pose.length > 64) return undefined
-  return {
+  if (!Array.isArray(snapshot.detections) || snapshot.detections.length > 20) return undefined
+  const pose = asPose(snapshot.pose, false)
+  if (!pose) return undefined
+  const worldPose = snapshot.worldPose == null ? undefined : asPose(snapshot.worldPose, true)
+  if (snapshot.worldPose != null && !worldPose) return undefined
+  const performance = snapshot.performance == null ? undefined : asPerformance(snapshot.performance)
+  if (snapshot.performance != null && !performance) return undefined
+  const next: AiSnapshot = {
     at: snapshot.at,
     inferenceMs: snapshot.inferenceMs,
     detections: snapshot.detections.filter((item) => {
@@ -125,12 +168,11 @@ function asSnapshot(value: unknown): AiSnapshot | null | undefined {
       const detection = item as AiSnapshot['detections'][number]
       return typeof detection.label === 'string' && typeof detection.score === 'number' && !!detection.box
     }),
-    pose: snapshot.pose.filter((item) => {
-      if (!item || typeof item !== 'object') return false
-      const point = item as AiSnapshot['pose'][number]
-      return typeof point.x === 'number' && typeof point.y === 'number' && typeof point.visibility === 'number'
-    }),
+    pose,
   }
+  if (worldPose && worldPose.length > 0) next.worldPose = worldPose
+  if (performance) next.performance = performance
+  return next
 }
 
 async function formRequest(req: IncomingMessage) {

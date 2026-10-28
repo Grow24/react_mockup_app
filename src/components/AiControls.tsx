@@ -1,4 +1,4 @@
-import { formatPercent } from '../format'
+import { formatPercent, formatPerformance } from '../format'
 import { useAi } from '../vision/context'
 
 function statusLabel(status: string) {
@@ -68,7 +68,10 @@ export function AiControls() {
       <div aria-live="polite">
         {ai.enabled && ai.latest ? (
           <>
-            <p className="muted">Last pass {Math.round(ai.latest.inferenceMs)} ms.</p>
+            <p className="muted">
+              Last pass {Math.round(ai.latest.inferenceMs)} ms.
+              {ai.latest.performance ? ` ${formatPerformance(ai.latest.performance)}.` : ''}
+            </p>
             {ai.latest.detections.length === 0 && !poseReady ? (
               <p className="muted">No object above the confidence line, and no pose yet.</p>
             ) : (

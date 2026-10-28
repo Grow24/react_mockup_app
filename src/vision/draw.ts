@@ -2,7 +2,7 @@ import type { AiSnapshot, PosePoint } from '../types'
 
 const COLORS = ['#f3d38a', '#9ee8e2', '#f0b7a4', '#d7c4f2']
 
-const POSE_CONNECTIONS: ReadonlyArray<readonly [number, number]> = [
+export const POSE_CONNECTIONS: ReadonlyArray<readonly [number, number]> = [
   [0, 1],
   [1, 2],
   [2, 3],

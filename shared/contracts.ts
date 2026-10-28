@@ -21,14 +21,23 @@ export type Detection = {
 export type PosePoint = {
   x: number
   y: number
+  z?: number
   visibility: number
+}
+
+export type InferencePerformance = {
+  processedFps: number
+  latencyMs: number
+  droppedFrames: number
 }
 
 export type AiSnapshot = {
   at: number
   detections: Detection[]
   pose: PosePoint[]
+  worldPose?: PosePoint[]
   inferenceMs: number
+  performance?: InferencePerformance
 }
 
 export const OBJECT_MODEL_ID = 'mediapipe-efficientdet-lite0'
@@ -76,6 +85,7 @@ export type SpatialResult = {
   source: 'mediapipe-pose'
   coordinateSpace: 'normalized-image'
   pose: PosePoint[]
+  worldPose?: PosePoint[]
 }
 
 export type MediaAssetRecord = {

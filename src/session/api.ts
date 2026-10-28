@@ -124,10 +124,14 @@ export function assetUrl(record: MediaAssetRecord) {
 
 export function snapshotOf(record: MediaAssetRecord): AiSnapshot | undefined {
   if (!record.inference) return undefined
-  return {
+  const worldPose = record.spatial?.worldPose ?? record.inference.worldPose
+  const snapshot: AiSnapshot = {
     at: record.inference.at,
     detections: record.inference.detections,
     pose: record.spatial?.pose ?? record.inference.pose,
     inferenceMs: record.inference.inferenceMs,
   }
+  if (worldPose && worldPose.length > 0) snapshot.worldPose = worldPose
+  if (record.inference.performance) snapshot.performance = record.inference.performance
+  return snapshot
 }

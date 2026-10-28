@@ -116,7 +116,14 @@ export function readPose(engines: Engines, video: HTMLVideoElement) {
   const pose: PosePoint[] = (result.landmarks[0] ?? []).map((point) => ({
     x: point.x,
     y: point.y,
+    z: point.z,
     visibility: point.visibility ?? 0,
   }))
-  return { pose, inferenceMs: performance.now() - started }
+  const worldPose: PosePoint[] = (result.worldLandmarks[0] ?? []).map((point) => ({
+    x: point.x,
+    y: point.y,
+    z: point.z,
+    visibility: point.visibility ?? 0,
+  }))
+  return { pose, worldPose, inferenceMs: performance.now() - started }
 }

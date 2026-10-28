@@ -3,6 +3,7 @@ import type { RefObject } from 'react'
 import type { Detection, PosePoint } from '../types'
 import { useAi } from './context'
 import { readDetections, readPose } from './engine'
+import { emptyPerformance, noteInference } from './performance'
 
 export function useLiveAnalysis(
   videoRef: RefObject<HTMLVideoElement | null>,
@@ -25,7 +26,19 @@ export function useLiveAnalysis(
     let mode: 'pose' | 'detect' = 'pose'
     let detections: Detection[] = []
     let pose: PosePoint[] = []
+    let worldPose: PosePoint[] = []
     let inferenceMs = 0
+    let presented = 0
+    let perf = emptyPerformance()
+
+    const countFrame = () => {
+      if (stopped) return
+      presented += 1
+      video.requestVideoFrameCallback(countFrame)
+    }
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      video.requestVideoFrameCallback(countFrame)
+    }
 
     const tick = () => {
       if (stopped) return
@@ -39,6 +52,7 @@ export function useLiveAnalysis(
         if (mode === 'pose') {
           const reading = readPose(engines, video)
           pose = reading.pose
+          worldPose = reading.worldPose
           inferenceMs = reading.inferenceMs
           mode = 'detect'
         } else {
@@ -47,12 +61,16 @@ export function useLiveAnalysis(
           inferenceMs = reading.inferenceMs
           mode = 'pose'
         }
+        const noted = noteInference(perf, performance.now(), inferenceMs, presented)
+        perf = noted.state
         const floor = confidenceRef.current
         publish({
           at: Date.now(),
           detections: detections.filter((item) => item.score >= floor),
           pose,
+          worldPose,
           inferenceMs,
+          performance: noted.sample,
         })
       } catch (error) {
         console.error(error)
