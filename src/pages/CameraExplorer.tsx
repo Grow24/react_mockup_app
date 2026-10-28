@@ -1,0 +1,200 @@
+import { useRef } from 'react'
+import { Link } from 'react-router-dom'
+import { useCamera } from '../camera/useCamera'
+import { formatClock, formatRange, formatSetting } from '../format'
+import { useSession } from '../session/context'
+
+export function CameraExplorer() {
+  const previewRef = useRef<HTMLVideoElement | null>(null)
+  const camera = useCamera(previewRef)
+  const { assets } = useSession()
+  const latest = assets[0]
+  const previewOn = camera.status === 'live' && !camera.busy
+  const showOverlay = !previewOn
+
+  return (
+    <section className="screen">
+      <div className="screen-intro">
+        <h2>Camera Explorer</h2>
+        <p>
+          Choose a camera, read the settings this browser exposes, then take a photo or record a
+          video. Files stay in this tab session until you refresh.
+        </p>
+      </div>
+
+      <div className="layout">
+        <div className="preview-column">
+          <div className="stage">
+            <video
+              ref={previewRef}
+              className={previewOn ? 'is-live' : ''}
+              playsInline
+              muted
+              autoPlay
+            />
+            {showOverlay ? (
+              <div className="stage-copy">
+                {camera.busy || camera.status === 'requesting' ? (
+                  <p>{camera.notice ?? 'Opening the camera…'}</p>
+                ) : null}
+                {camera.status === 'idle' ? (
+                  <>
+                    <p>The preview is off.</p>
+                    <button type="button" className="primary" onClick={camera.start}>
+                      Enable camera
+                    </button>
+                  </>
+                ) : null}
+                {camera.status === 'denied' || camera.status === 'error' ? (
+                  <>
+                    <p role="alert">{camera.error}</p>
+                    <button type="button" className="primary" onClick={camera.start}>
+                      Try again
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            {camera.recording ? (
+              <div className="rec-badge">
+                <span className="rec-dot" />
+                {formatClock(camera.elapsedMs)}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="controls">
+            <button
+              type="button"
+              className="primary"
+              disabled={!previewOn}
+              onClick={camera.capturePhoto}
+            >
+              Capture photo
+            </button>
+            <button
+              type="button"
+              className={camera.recording ? 'danger' : 'secondary'}
+              disabled={!previewOn}
+              onClick={camera.toggleRecording}
+            >
+              {camera.recording ? 'Stop recording' : 'Start recording'}
+            </button>
+          </div>
+          {camera.captureMessage ? (
+            <p className="note" role="status">
+              {camera.captureMessage}
+            </p>
+          ) : null}
+
+          <article className="card playback">
+            <header className="card-head">
+              <h3>Latest capture</h3>
+              {latest ? <Link to="/results">All results</Link> : null}
+            </header>
+            {latest ? (
+              <figure>
+                {latest.kind === 'photo' ? (
+                  <img src={latest.url} alt={`Photo from ${latest.cameraLabel}`} />
+                ) : (
+                  <video src={latest.url} controls playsInline />
+                )}
+                <figcaption>
+                  {latest.kind === 'photo' ? 'JPEG' : 'Video'} · {latest.cameraLabel}
+                  {latest.width && latest.height ? ` · ${latest.width}×${latest.height}` : ''}
+                </figcaption>
+              </figure>
+            ) : (
+              <p className="muted">Photos and recordings appear here after you capture them.</p>
+            )}
+          </article>
+        </div>
+
+        <aside className="side">
+          <article className="card">
+            <header className="card-head">
+              <h3>Camera</h3>
+            </header>
+            <label className="field">
+              <span>Input</span>
+              <select
+                value={camera.selectedId}
+                disabled={!previewOn || camera.cameras.length === 0}
+                onChange={(event) => void camera.selectCamera(event.target.value)}
+              >
+                {camera.cameras.length === 0 ? <option value="">No camera yet</option> : null}
+                {camera.live &&
+                camera.selectedId &&
+                !camera.cameras.some((item) => item.deviceId === camera.selectedId) ? (
+                  <option value={camera.selectedId}>{camera.live.label}</option>
+                ) : null}
+                {camera.cameras.map((item) => (
+                  <option key={item.deviceId} value={item.deviceId}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="muted">
+              {camera.cameras.length > 0
+                ? `${camera.cameras.length} camera${camera.cameras.length === 1 ? '' : 's'} visible to this browser.`
+                : 'Allow the camera to list devices. Labels stay hidden until permission is granted.'}
+            </p>
+          </article>
+
+          <article className="card">
+            <header className="card-head">
+              <h3>Active settings</h3>
+            </header>
+            <dl className="facts">
+              <div>
+                <dt>Resolution</dt>
+                <dd>
+                  {previewOn && camera.live?.width && camera.live.height
+                    ? `${camera.live.width}×${camera.live.height}`
+                    : 'Not reporting'}
+                </dd>
+              </div>
+              <div>
+                <dt>Frame rate</dt>
+                <dd>{previewOn ? formatSetting(camera.live?.frameRate, 'fps') : 'Not reporting'}</dd>
+              </div>
+              <div>
+                <dt>Facing</dt>
+                <dd>{previewOn ? formatSetting(camera.live?.facingMode) : 'Not reporting'}</dd>
+              </div>
+            </dl>
+          </article>
+
+          <article className="card">
+            <header className="card-head">
+              <h3>Supported ranges</h3>
+            </header>
+            <dl className="facts">
+              <div>
+                <dt>Width</dt>
+                <dd>{formatRange(camera.live?.widthRange, 'px')}</dd>
+              </div>
+              <div>
+                <dt>Height</dt>
+                <dd>{formatRange(camera.live?.heightRange, 'px')}</dd>
+              </div>
+              <div>
+                <dt>Frame rate</dt>
+                <dd>{formatRange(camera.live?.frameRateRange, 'fps')}</dd>
+              </div>
+              <div>
+                <dt>Facing modes</dt>
+                <dd>
+                  {camera.live?.facingModes && camera.live.facingModes.length > 0
+                    ? camera.live.facingModes.join(', ')
+                    : 'Not exposed by this browser'}
+                </dd>
+              </div>
+            </dl>
+          </article>
+        </aside>
+      </div>
+    </section>
+  )
+}

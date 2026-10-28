@@ -1,0 +1,40 @@
+import { NavLink } from 'react-router-dom'
+import type { ReactNode } from 'react'
+import { useSession } from '../session/context'
+
+const TABS = [
+  { to: '/', label: 'Camera', end: true },
+  { to: '/ai', label: 'AI', end: false },
+  { to: '/results', label: 'Results', end: false },
+]
+
+export function Shell({ children }: { children: ReactNode }) {
+  const { assets } = useSession()
+
+  return (
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">
+          <p className="eyebrow">PBMP Camera</p>
+          <h1>Camera module</h1>
+        </div>
+        <nav className="tabs" aria-label="Screens">
+          {TABS.map((tab) => (
+            <NavLink
+              key={tab.to}
+              to={tab.to}
+              end={tab.end}
+              className={({ isActive }) => (isActive ? 'tab active' : 'tab')}
+            >
+              {tab.label}
+              {tab.to === '/results' && assets.length > 0 ? (
+                <span className="count">{assets.length}</span>
+              ) : null}
+            </NavLink>
+          ))}
+        </nav>
+      </header>
+      <main className="main">{children}</main>
+    </div>
+  )
+}
