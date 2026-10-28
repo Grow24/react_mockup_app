@@ -31,6 +31,10 @@ export function formatRange(range: NumericRange | undefined, unit: string) {
   return only == null ? 'Not exposed by this browser' : `${formatNumber(only)} ${unit}`
 }
 
+export function formatPercent(score: number) {
+  return `${Math.round(score * 100)}%`
+}
+
 export function formatSetting(value: number | string | undefined, unit = '') {
   if (value == null || value === '') return 'Not reported'
   const rendered = typeof value === 'number' ? formatNumber(value) : value

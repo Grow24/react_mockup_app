@@ -1,10 +1,16 @@
 FROM node:22-slim AS build
-LABEL "language"="nodejs"
-LABEL "framework"="vite"
 WORKDIR /src
-COPY . .
+COPY package.json package-lock.json ./
 RUN npm install
+COPY . .
 RUN npm run build
 
-FROM zeabur/caddy-static
-COPY --from=build /src/dist /usr/share/caddy
+FROM node:22-slim
+WORKDIR /src
+ENV NODE_ENV=production
+ENV PORT=8080
+COPY --from=build /src/dist ./dist
+COPY --from=build /src/server ./server
+COPY --from=build /src/shared ./shared
+EXPOSE 8080
+CMD ["node", "--experimental-strip-types", "server/index.ts"]

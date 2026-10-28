@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useSession } from '../session/context'
-import type { CameraInfo, CameraStatus, LiveCamera, NumericRange } from '../types'
+import type { AiSnapshot, CameraInfo, CameraStatus, LiveCamera, NumericRange } from '../types'
 
 const MIME_CANDIDATES = [
   'video/webm;codecs=vp9',
@@ -24,9 +24,10 @@ function describeTrack(track: MediaStreamTrack, cameras: CameraInfo[]): LiveCame
   const caps = typeof track.getCapabilities === 'function' ? track.getCapabilities() : undefined
   const deviceId = settings.deviceId ?? ''
   const listed = cameras.find((camera) => camera.deviceId === deviceId)
+  const trackLabel = track.label && track.label !== deviceId ? track.label : ''
   return {
     deviceId,
-    label: track.label || listed?.label || 'Camera',
+    label: trackLabel || listed?.label || 'Camera',
     width: settings.width,
     height: settings.height,
     frameRate: settings.frameRate,
@@ -96,7 +97,10 @@ function preferredMime() {
   return MIME_CANDIDATES.find((type) => MediaRecorder.isTypeSupported(type))
 }
 
-export function useCamera(previewRef: RefObject<HTMLVideoElement | null>) {
+export function useCamera(
+  previewRef: RefObject<HTMLVideoElement | null>,
+  readSnapshot: () => AiSnapshot | null,
+) {
   const { addAsset } = useSession()
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -139,13 +143,16 @@ export function useCamera(previewRef: RefObject<HTMLVideoElement | null>) {
     const info = liveRef.current
     addAsset({
       kind: 'video',
-      url: URL.createObjectURL(blob),
+      blob,
       mimeType,
       cameraLabel: info?.label ?? 'Camera',
       width: info?.width,
       height: info?.height,
+      snapshot: readSnapshot(),
     })
-    if (mountedRef.current) setCaptureMessage('Video saved in this session. Play it below or on Results.')
+    if (mountedRef.current) {
+      setCaptureMessage('Video saved to this session. Play it below or on Results.')
+    }
   }
 
   function stopRecordingAndWait() {
@@ -291,13 +298,14 @@ export function useCamera(previewRef: RefObject<HTMLVideoElement | null>) {
 
     addAsset({
       kind: 'photo',
-      url: URL.createObjectURL(blob),
+      blob,
       mimeType: 'image/jpeg',
       cameraLabel: info?.label ?? 'Camera',
       width: canvas.width,
       height: canvas.height,
+      snapshot: readSnapshot(),
     })
-    setCaptureMessage('Photo saved in this session.')
+    setCaptureMessage('Photo saved to this session.')
   }
 
   useEffect(() => {

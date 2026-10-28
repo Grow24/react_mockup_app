@@ -1,22 +1,51 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { formatWhen } from '../format'
+import { AnnotationCanvas } from '../components/AnnotationCanvas'
+import { formatPercent, formatWhen } from '../format'
 import { useSession } from '../session/context'
+import type { AiSnapshot } from '../types'
+
+function poseReady(snapshot: AiSnapshot | undefined) {
+  return (snapshot?.pose.filter((point) => point.visibility >= 0.5).length ?? 0) >= 4
+}
 
 export function Results() {
-  const { assets, removeAsset } = useSession()
+  const { assets, ready, storageWarning, backend, removeAsset } = useSession()
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const photoRef = useRef<HTMLImageElement | null>(null)
+  const poseFrameRef = useRef<HTMLDivElement | null>(null)
   const selected = assets.find((asset) => asset.id === selectedId) ?? assets[0]
+
+  if (!ready) {
+    return (
+      <section className="screen">
+        <div className="screen-intro">
+          <h2>Results</h2>
+          <p>Opening the shared session.</p>
+        </div>
+      </section>
+    )
+  }
 
   return (
     <section className="screen">
       <div className="screen-intro">
         <h2>Results</h2>
         <p>
-          Saved photos and videos from this visit. Refreshing the page clears them. The Three.js
-          skeleton arrives when pose landmarks exist.
+          Photos and videos in this shared session.
+          {backend === 'online'
+            ? ' The session link in the header opens the same files in another browser.'
+            : ' The server is offline, so these stay in this browser.'}{' '}
+          A photo keeps the boxes and skeleton from the moment it was taken. A video keeps the last
+          analyzed frame.
         </p>
       </div>
+
+      {storageWarning ? (
+        <p className="warn" role="alert">
+          {storageWarning}
+        </p>
+      ) : null}
 
       {assets.length === 0 || !selected ? (
         <article className="card empty-card">
@@ -37,7 +66,19 @@ export function Results() {
             </header>
             <figure>
               {selected.kind === 'photo' ? (
-                <img src={selected.url} alt={`Photo from ${selected.cameraLabel}`} />
+                <div className="annotated">
+                  <img
+                    ref={photoRef}
+                    src={selected.url}
+                    alt={`Photo from ${selected.cameraLabel}`}
+                  />
+                  <AnnotationCanvas
+                    frameRef={photoRef}
+                    sourceWidth={selected.width ?? 0}
+                    sourceHeight={selected.height ?? 0}
+                    snapshot={selected.snapshot ?? null}
+                  />
+                </div>
               ) : (
                 <video key={selected.id} src={selected.url} controls playsInline />
               )}
@@ -46,13 +87,47 @@ export function Results() {
                 {selected.width && selected.height ? ` · ${selected.width}×${selected.height}` : ''}
               </figcaption>
             </figure>
-            <p className="muted">3D pose view is not connected yet. This player shows the real capture.</p>
+
+            {selected.kind === 'video' && selected.snapshot && selected.width && selected.height ? (
+              <div className="still-pose">
+                <p className="muted">Boxes and skeleton from the last analyzed frame.</p>
+                <div
+                  ref={poseFrameRef}
+                  className="pose-frame"
+                  style={{ aspectRatio: `${selected.width} / ${selected.height}` }}
+                >
+                  <AnnotationCanvas
+                    frameRef={poseFrameRef}
+                    sourceWidth={selected.width}
+                    sourceHeight={selected.height}
+                    snapshot={selected.snapshot}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            {selected.snapshot ? (
+              <ul className="label-list">
+                {selected.snapshot.detections.length === 0 ? (
+                  <li>No object stored above the confidence line</li>
+                ) : (
+                  selected.snapshot.detections.map((detection) => (
+                    <li key={`${detection.label}-${detection.box.x}-${detection.box.y}`}>
+                      {detection.label} {formatPercent(detection.score)}
+                    </li>
+                  ))
+                )}
+                <li>{poseReady(selected.snapshot) ? 'Pose stored with this capture' : 'No pose stored'}</li>
+              </ul>
+            ) : (
+              <p className="muted">AI was off for this capture, so there are no boxes or a skeleton.</p>
+            )}
           </article>
 
           <aside className="side">
             <article className="card">
               <header className="card-head">
-                <h3>This session</h3>
+                <h3>Saved here</h3>
                 <span className="pill">{assets.length}</span>
               </header>
               <ul className="asset-list">
@@ -66,6 +141,7 @@ export function Results() {
                       <span>{asset.kind === 'photo' ? 'Photo' : 'Video'}</span>
                       <small>
                         {formatWhen(asset.createdAt)} · {asset.cameraLabel}
+                        {asset.snapshot ? ' · AI' : ''}
                       </small>
                     </button>
                   </li>

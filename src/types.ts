@@ -1,4 +1,13 @@
-export type MediaKind = 'photo' | 'video'
+import type {
+  AiSnapshot,
+  Box,
+  Detection,
+  MediaKind,
+  NumericRange,
+  PosePoint,
+} from '../shared/contracts.ts'
+
+export type { AiSnapshot, Box, Detection, MediaKind, NumericRange, PosePoint }
 
 export type MediaAsset = {
   id: string
@@ -9,18 +18,22 @@ export type MediaAsset = {
   cameraLabel: string
   width?: number
   height?: number
+  snapshot?: AiSnapshot
 }
 
-export type NewMediaAsset = Omit<MediaAsset, 'id' | 'createdAt'>
+export type NewMediaAsset = {
+  kind: MediaKind
+  blob: Blob
+  mimeType: string
+  cameraLabel: string
+  width?: number
+  height?: number
+  snapshot?: AiSnapshot | null
+}
 
 export type CameraInfo = {
   deviceId: string
   label: string
-}
-
-export type NumericRange = {
-  min?: number
-  max?: number
 }
 
 export type LiveCamera = {

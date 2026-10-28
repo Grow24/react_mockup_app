@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { AiControls } from '../components/AiControls'
 import { useSession } from '../session/context'
 
 export function AiProcessing() {
@@ -9,31 +10,22 @@ export function AiProcessing() {
       <div className="screen-intro">
         <h2>AI Processing</h2>
         <p>
-          Capture and inference stay separate. Photos and video already work with this switch off.
-          MediaPipe labels, pose landmarks, and bounding boxes connect in the next stage.
+          Object labels come from MediaPipe EfficientDet. The skeleton comes from the Pose
+          Landmarker. Both draw on the camera preview, and a photo keeps the result from the moment
+          you captured it.
         </p>
       </div>
 
-      <article className="card">
-        <header className="card-head">
-          <h3>Inference</h3>
-          <span className="pill">Off</span>
-        </header>
-        <p>No model is loaded. The camera page does not send frames anywhere.</p>
-        <ul className="next-list">
-          <li>MediaPipe object labels and confidence</li>
-          <li>Pose landmarks for the 3D viewer</li>
-          <li>A confidence threshold that does not stop capture</li>
-        </ul>
-        <div className="controls">
-          <Link className="primary link-button" to="/">
-            Back to camera
-          </Link>
-          <Link className="secondary link-button" to="/results">
-            Open results ({assets.length})
-          </Link>
-        </div>
-      </article>
+      <AiControls />
+
+      <div className="controls page-links">
+        <Link className="primary link-button" to="/">
+          Open camera
+        </Link>
+        <Link className="secondary link-button" to="/results">
+          Open results ({assets.length})
+        </Link>
+      </div>
     </section>
   )
 }

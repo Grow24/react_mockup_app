@@ -15,6 +15,12 @@ body {
   min-width: 320px;
 }
 
+.booting {
+  width: min(1120px, calc(100% - 32px));
+  margin: 48px auto;
+  color: #5f574e;
+}
+
 button,
 select,
 a { font: inherit; }
@@ -54,6 +60,19 @@ h1, h2, h3 {
 }
 
 .brand h1 { font-size: 1.7rem; }
+
+.session-line {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: #5f574e;
+  max-width: 42ch;
+  overflow-wrap: anywhere;
+}
+
+.session-line a {
+  color: #0f6a64;
+  margin-left: 8px;
+}
 
 .tabs {
   display: flex;
@@ -122,6 +141,26 @@ h1, h2, h3 {
 }
 
 .stage video.is-live { opacity: 1; }
+
+.annotation {
+  position: absolute;
+  pointer-events: none;
+}
+
+.annotated {
+  position: relative;
+  background: #161310;
+  border-radius: 12px;
+}
+
+.pose-frame {
+  position: relative;
+  width: min(100%, 420px);
+  background: #161310;
+  border-radius: 12px;
+}
+
+.still-pose { display: grid; gap: 8px; margin-top: 12px; }
 
 .stage-copy {
   position: absolute;
@@ -221,6 +260,21 @@ select {
 .facts dd { margin: 0; text-align: right; }
 
 .note { color: #0f6a64; }
+.warn { color: #9d2c2c; }
+
+input[type='range'] {
+  width: 100%;
+  accent-color: #0f6a64;
+}
+
+.label-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.page-links { margin-top: 12px; }
 
 .playback figure { margin: 0; display: grid; gap: 8px; }
 .playback img, .playback video {

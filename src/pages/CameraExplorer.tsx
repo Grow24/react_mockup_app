@@ -1,16 +1,59 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useCamera } from '../camera/useCamera'
+import { AiControls } from '../components/AiControls'
+import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import { formatClock, formatRange, formatSetting } from '../format'
 import { useSession } from '../session/context'
+import { useAi } from '../vision/context'
+import { useLiveAnalysis } from '../vision/useLiveAnalysis'
 
 export function CameraExplorer() {
   const previewRef = useRef<HTMLVideoElement | null>(null)
-  const camera = useCamera(previewRef)
-  const { assets } = useSession()
+  const ai = useAi()
+  const camera = useCamera(previewRef, ai.readSnapshot)
+  const { assets, storageWarning, noteCameras } = useSession()
+  const [frame, setFrame] = useState({ width: 0, height: 0 })
+  useLiveAnalysis(previewRef, camera.status === 'live' && ai.enabled && ai.status === 'ready')
   const latest = assets[0]
   const previewOn = camera.status === 'live' && !camera.busy
   const showOverlay = !previewOn
+
+  useEffect(() => {
+    const video = previewRef.current
+    if (!video) return
+    const sync = () => setFrame({ width: video.videoWidth, height: video.videoHeight })
+    sync()
+    video.addEventListener('loadeddata', sync)
+    video.addEventListener('resize', sync)
+    return () => {
+      video.removeEventListener('loadeddata', sync)
+      video.removeEventListener('resize', sync)
+    }
+  }, [camera.stream])
+
+  useEffect(() => {
+    const listed = new Map(camera.cameras.map((item) => [item.deviceId, item.label]))
+    if (camera.live?.deviceId) listed.set(camera.live.deviceId, camera.live.label)
+    if (listed.size === 0) return
+    noteCameras(
+      [...listed.entries()].map(([deviceId, label]) => {
+        const live = camera.live?.deviceId === deviceId ? camera.live : undefined
+        return {
+          deviceId,
+          label,
+          capability: live
+            ? {
+                width: live.widthRange,
+                height: live.heightRange,
+                frameRate: live.frameRateRange,
+                facingModes: live.facingModes,
+              }
+            : undefined,
+        }
+      }),
+    )
+  }, [camera.cameras, camera.live, noteCameras])
 
   return (
     <section className="screen">
@@ -18,7 +61,8 @@ export function CameraExplorer() {
         <h2>Camera Explorer</h2>
         <p>
           Choose a camera, read the settings this browser exposes, then take a photo or record a
-          video. Files stay in this tab session until you refresh.
+          video. Files are kept in this browser and, when the server is running, in the shared
+          session. AI labels and the skeleton appear on the preview only while AI is on.
         </p>
       </div>
 
@@ -55,6 +99,12 @@ export function CameraExplorer() {
                 ) : null}
               </div>
             ) : null}
+            <AnnotationCanvas
+              frameRef={previewRef}
+              sourceWidth={frame.width}
+              sourceHeight={frame.height}
+              snapshot={previewOn && ai.enabled ? ai.latest : null}
+            />
             {camera.recording ? (
               <div className="rec-badge">
                 <span className="rec-dot" />
@@ -86,6 +136,11 @@ export function CameraExplorer() {
               {camera.captureMessage}
             </p>
           ) : null}
+          {storageWarning ? (
+            <p className="warn" role="alert">
+              {storageWarning}
+            </p>
+          ) : null}
 
           <article className="card playback">
             <header className="card-head">
@@ -111,6 +166,7 @@ export function CameraExplorer() {
         </div>
 
         <aside className="side">
+          <AiControls />
           <article className="card">
             <header className="card-head">
               <h3>Camera</h3>

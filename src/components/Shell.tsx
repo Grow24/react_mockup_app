@@ -8,6 +8,18 @@ const TABS = [
   { to: '/results', label: 'Results', end: false },
 ]
 
+function SessionLine() {
+  const { sessionId, backend } = useSession()
+  if (!sessionId) return null
+  const href = `${window.location.origin}/?session=${sessionId}`
+  return (
+    <p className="session-line">
+      {backend === 'online' ? 'On the server' : 'This browser only'}
+      <a href={href}>{sessionId}</a>
+    </p>
+  )
+}
+
 export function Shell({ children }: { children: ReactNode }) {
   const { assets } = useSession()
 
@@ -17,6 +29,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <div className="brand">
           <p className="eyebrow">PBMP Camera</p>
           <h1>Camera module</h1>
+          <SessionLine />
         </div>
         <nav className="tabs" aria-label="Screens">
           {TABS.map((tab) => (
