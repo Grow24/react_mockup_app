@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync } from 'node:sqlite'
 import {
   OBJECT_MODEL_ID,
   POSE_MODEL_ID,
@@ -15,13 +15,12 @@ import {
   type SpatialResult,
 } from '../shared/contracts.ts'
 
-const dataDir = path.resolve(process.cwd(), 'server/data')
-const mediaDir = path.join(dataDir, 'media')
-mkdirSync(mediaDir, { recursive: true })
+let mediaDir = path.join(path.resolve(process.cwd(), 'server/data'), 'media')
+let db: DatabaseSync | undefined
 
-const db = new DatabaseSync(path.join(dataDir, 'pbmp.sqlite'))
-db.exec(`
-  PRAGMA journal_mode = WAL;
+const schema = `
+  PRAGMA journal_mode = DELETE;
+  PRAGMA busy_timeout = 5000;
   CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL,
@@ -53,16 +52,49 @@ db.exec(`
     name TEXT NOT NULL,
     task TEXT NOT NULL
   );
-`)
+`
 
 const models: AiModel[] = [
   { id: OBJECT_MODEL_ID, name: 'MediaPipe EfficientDet Lite0', task: 'object-detection' },
   { id: POSE_MODEL_ID, name: 'MediaPipe Pose Landmarker Lite', task: 'pose' },
 ]
-const insertModel = db.prepare(
-  'INSERT INTO models (id, name, task) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, task = excluded.task',
-)
-for (const model of models) insertModel.run(model.id, model.name, model.task)
+
+function database() {
+  if (!db) throw new Error('The session store is not open.')
+  return db
+}
+
+function openAt(DatabaseSyncCtor: typeof import('node:sqlite').DatabaseSync, dir: string) {
+  const media = path.join(dir, 'media')
+  mkdirSync(media, { recursive: true })
+  const opened = new DatabaseSyncCtor(path.join(dir, 'pbmp.sqlite'))
+  opened.exec(schema)
+  const insertModel = opened.prepare(
+    'INSERT INTO models (id, name, task) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, task = excluded.task',
+  )
+  for (const model of models) insertModel.run(model.id, model.name, model.task)
+  return { opened, media }
+}
+
+export async function openStore() {
+  if (db) return
+  const { DatabaseSync: DatabaseSyncCtor } = await import('node:sqlite')
+  const preferred = path.resolve(process.cwd(), 'server/data')
+  try {
+    const opened = openAt(DatabaseSyncCtor, preferred)
+    db = opened.opened
+    mediaDir = opened.media
+    console.log(`PBMP data directory ${preferred}`)
+    return
+  } catch (error) {
+    console.error(`Could not open ${preferred}. Using /tmp/pbmp-data.`, error)
+  }
+  const fallback = '/tmp/pbmp-data'
+  const opened = openAt(DatabaseSyncCtor, fallback)
+  db = opened.opened
+  mediaDir = opened.media
+  console.log(`PBMP data directory ${fallback}`)
+}
 
 export function listModels() {
   return models
@@ -96,13 +128,13 @@ type AssetRow = {
 }
 
 function sessionById(id: string) {
-  return db.prepare('SELECT id, created_at, updated_at, device_json FROM sessions WHERE id = ?').get(id) as
+  return database().prepare('SELECT id, created_at, updated_at, device_json FROM sessions WHERE id = ?').get(id) as
     | SessionRow
     | undefined
 }
 
 function camerasFor(sessionId: string) {
-  const rows = db
+  const rows = database()
     .prepare(
       'SELECT device_id, label, capability_json FROM cameras WHERE session_id = ? ORDER BY label',
     )
@@ -115,7 +147,7 @@ function camerasFor(sessionId: string) {
 }
 
 function assetsFor(sessionId: string) {
-  const rows = db
+  const rows = database()
     .prepare(
       `SELECT id, session_id, kind, mime_type, created_at, camera_label, width, height, byte_length, inference_json, spatial_json
        FROM assets WHERE session_id = ? ORDER BY created_at DESC`,
@@ -158,7 +190,7 @@ export function saveSession(id: string, device: Device) {
   const existing = sessionById(id)
   const now = Date.now()
   if (existing) return getSession(id)!
-  db.prepare('INSERT INTO sessions (id, created_at, updated_at, device_json) VALUES (?, ?, ?, ?)').run(
+  database().prepare('INSERT INTO sessions (id, created_at, updated_at, device_json) VALUES (?, ?, ?, ?)').run(
     id,
     now,
     now,
@@ -169,11 +201,11 @@ export function saveSession(id: string, device: Device) {
 
 export function saveCameras(sessionId: string, cameras: CameraRecord[]) {
   if (!sessionById(sessionId)) return undefined
-  const remove = db.prepare('DELETE FROM cameras WHERE session_id = ?')
-  const insert = db.prepare(
+  const remove = database().prepare('DELETE FROM cameras WHERE session_id = ?')
+  const insert = database().prepare(
     'INSERT INTO cameras (session_id, device_id, label, capability_json) VALUES (?, ?, ?, ?)',
   )
-  db.exec('BEGIN')
+  database().exec('BEGIN')
   try {
     remove.run(sessionId)
     for (const camera of cameras) {
@@ -184,10 +216,10 @@ export function saveCameras(sessionId: string, cameras: CameraRecord[]) {
         camera.capability ? JSON.stringify(camera.capability) : null,
       )
     }
-    db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), sessionId)
-    db.exec('COMMIT')
+    database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), sessionId)
+    database().exec('COMMIT')
   } catch (error) {
-    db.exec('ROLLBACK')
+    database().exec('ROLLBACK')
     throw error
   }
   return getSession(sessionId)
@@ -212,7 +244,7 @@ export async function saveAsset(
   bytes: Buffer,
 ) {
   if (!sessionById(sessionId)) return undefined
-  const existing = db.prepare('SELECT session_id FROM assets WHERE id = ?').get(asset.id) as
+  const existing = database().prepare('SELECT session_id FROM assets WHERE id = ?').get(asset.id) as
     | { session_id: string }
     | undefined
   if (existing) {
@@ -237,7 +269,7 @@ export async function saveAsset(
 
   await writeFile(mediaPath(asset.id), bytes)
   try {
-    db.prepare(
+    database().prepare(
       `INSERT INTO assets (
         id, session_id, kind, mime_type, created_at, camera_label, width, height, byte_length, inference_json, spatial_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -254,7 +286,7 @@ export async function saveAsset(
       inference ? JSON.stringify(inference) : null,
       spatial ? JSON.stringify(spatial) : null,
     )
-    db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), sessionId)
+    database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), sessionId)
   } catch (error) {
     await unlink(mediaPath(asset.id)).catch(() => undefined)
     throw error
@@ -263,7 +295,7 @@ export async function saveAsset(
 }
 
 export function readAssetFile(id: string) {
-  const row = db
+  const row = database()
     .prepare('SELECT id, mime_type FROM assets WHERE id = ?')
     .get(id) as { id: string; mime_type: string } | undefined
   if (!row) return undefined
@@ -278,12 +310,12 @@ export async function readMedia(id: string) {
 }
 
 export async function deleteAsset(id: string) {
-  const row = db.prepare('SELECT id, session_id FROM assets WHERE id = ?').get(id) as
+  const row = database().prepare('SELECT id, session_id FROM assets WHERE id = ?').get(id) as
     | { id: string; session_id: string }
     | undefined
   if (!row) return false
-  db.prepare('DELETE FROM assets WHERE id = ?').run(id)
-  db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), row.session_id)
+  database().prepare('DELETE FROM assets WHERE id = ?').run(id)
+  database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), row.session_id)
   await unlink(mediaPath(id)).catch(() => undefined)
   return true
 }

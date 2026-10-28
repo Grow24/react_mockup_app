@@ -7,6 +7,7 @@ import {
   deleteAsset,
   getSession,
   listModels,
+  openStore,
   readMedia,
   saveAsset,
   saveCameras,
@@ -14,7 +15,14 @@ import {
 } from './store.ts'
 import type { AiSnapshot, CameraRecord, Device } from '../shared/contracts.ts'
 
-const port = Number(process.env.PORT ?? process.env.PBMP_PORT ?? 8787)
+function listenPort() {
+  const raw = (process.env.PORT || process.env.PBMP_PORT || '8787').trim()
+  const port = Number(raw)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return 8080
+  return port
+}
+
+const port = listenPort()
 const distDir = path.resolve(process.cwd(), 'dist')
 const MAX_JSON = 1_000_000
 const MAX_MEDIA = 200 * 1024 * 1024
@@ -147,6 +155,18 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 
   if (req.method === 'GET' && url.pathname === '/api/health') {
     sendJson(res, 200, { ok: true })
+    return
+  }
+
+  if (!url.pathname.startsWith('/api')) {
+    if (await serveApp(req, res, url.pathname)) return
+    sendJson(res, 404, { error: 'Not found.' })
+    return
+  }
+
+  await storeReady
+  if (storeError) {
+    sendJson(res, 503, { error: 'The session store is not available.' })
     return
   }
 
@@ -334,7 +354,6 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return
   }
 
-  if (await serveApp(req, res, url.pathname)) return
   sendJson(res, 404, { error: 'Not found.' })
 }
 
@@ -389,6 +408,13 @@ const server = createServer((req, res) => {
   })
 })
 
+let storeError: unknown
+const storeReady = openStore().catch((error: unknown) => {
+  storeError = error
+  console.error('Session store did not open.', error)
+})
+
+console.log(`PBMP starting. Node ${process.version}. Port ${port}.`)
 server.listen(port, '0.0.0.0', () => {
   console.log(`PBMP API listening on http://0.0.0.0:${port}`)
 })

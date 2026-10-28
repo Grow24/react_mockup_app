@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "server": "node --experimental-strip-types server/index.ts",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && node scripts/emit-server.mjs && vite build",
     "lint": "oxlint",
     "preview": "vite preview"
   },
