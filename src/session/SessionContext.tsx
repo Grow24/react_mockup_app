@@ -1,21 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { CameraRecord, CourtCalibration, MediaAssetRecord } from '../../shared/contracts.ts'
+import type { BallTrack, CameraRecord, CourtCalibration, MediaAssetRecord, SessionDetail } from '../../shared/contracts.ts'
 import type { MediaAsset, NewMediaAsset } from '../types'
 import {
   assetUrl,
+  clearRemoteBallTrack,
   clearRemoteCourt,
   deleteRemoteAsset,
   fetchSession,
   openSession,
+  readLocalBallTracks,
   readLocalCourt,
   rememberedSessionId,
   rememberSessionId,
   saveCameras,
+  saveRemoteBallTrack,
   saveRemoteCourt,
   snapshotOf,
   thisDevice,
+  tracksById,
   uploadAsset,
+  writeLocalBallTracks,
   writeLocalCourt,
+  type BallTracks,
 } from './api'
 import { deleteStored, loadStored, saveStored, type StoredAsset } from './db'
 import { SessionContext, type BackendStatus } from './context'
@@ -58,8 +64,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [storageWarning, setStorageWarning] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [court, setCourtState] = useState<CourtCalibration | null>(null)
+  const [ballTracks, setBallTracksState] = useState<BallTracks>({})
   const [backend, setBackend] = useState<BackendStatus>('offline')
   const assetsRef = useRef(assets)
+  const ballTracksRef = useRef<BallTracks>({})
   const sessionRef = useRef<string | null>(null)
   const camerasRef = useRef('')
   const backendRef = useRef<BackendStatus>('offline')
@@ -125,7 +133,35 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [publishRemote, rememberAsset],
   )
 
+  const publishBallTracks = useCallback((next: BallTracks) => {
+    ballTracksRef.current = next
+    setBallTracksState(next)
+    const id = sessionRef.current
+    if (id) writeLocalBallTracks(id, next)
+  }, [])
+
+  const setBallTrack = useCallback(
+    (assetId: string, track: BallTrack | null) => {
+      const next = { ...ballTracksRef.current }
+      if (track) next[assetId] = track
+      else delete next[assetId]
+      publishBallTracks(next)
+      if (backendRef.current !== 'online') return
+      const request = track ? saveRemoteBallTrack(track) : clearRemoteBallTrack(assetId)
+      void request.catch((error) => {
+        console.error(error)
+        setStorageWarning('The ball track stays in this browser. The server did not keep it.')
+      })
+    },
+    [publishBallTracks],
+  )
+
   const removeAsset = useCallback((id: string) => {
+    if (ballTracksRef.current[id]) {
+      const next = { ...ballTracksRef.current }
+      delete next[id]
+      publishBallTracks(next)
+    }
     setAssets((current) => {
       const target = current.find((asset) => asset.id === id)
       if (target?.url.startsWith('blob:')) URL.revokeObjectURL(target.url)
@@ -138,7 +174,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setStorageWarning('Removed here, but the server copy may still be there.')
       })
     }
-  }, [])
+  }, [publishBallTracks])
 
   const setCourt = useCallback((next: CourtCalibration | null) => {
     setCourtState(next)
@@ -195,6 +231,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    async function syncBallTracks(session: SessionDetail) {
+      const remote = tracksById(session.ballTracks)
+      const assetIds = new Set(session.assets.map((asset) => asset.id))
+      for (const track of Object.values(readLocalBallTracks(session.id))) {
+        if (remote[track.assetId] || !assetIds.has(track.assetId)) continue
+        try {
+          await saveRemoteBallTrack(track)
+          remote[track.assetId] = track
+        } catch (error) {
+          console.error(error)
+        }
+      }
+      return remote
+    }
+
     async function boot() {
       const asked = requestedSessionId()
       const id = asked || rememberedSessionId() || crypto.randomUUID()
@@ -216,26 +267,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setBackend('online')
         backendRef.current = 'online'
         const remoteIds = new Set(session.assets.map((asset) => asset.id))
-        let records = session.assets
-        let courtValue = session.court ?? null
+        let latest = session
         try {
           await syncLocal(session.id, remoteIds)
-          const fresh = await fetchSession(session.id)
-          if (fresh) {
-            records = fresh.assets
-            courtValue = fresh.court ?? null
-          }
+          latest = (await fetchSession(session.id)) ?? session
+          const tracks = await syncBallTracks(latest)
           if (!active) return
-          setAssets(records.map((asset) => fromServer(asset)))
-          setCourtState(courtValue)
-          writeLocalCourt(session.id, courtValue)
+          setAssets(latest.assets.map((asset) => fromServer(asset)))
+          setCourtState(latest.court ?? null)
+          writeLocalCourt(session.id, latest.court ?? null)
+          publishBallTracks(tracks)
           setStorageWarning(null)
         } catch (error) {
           if (!active) return
           console.error(error)
-          setAssets(records.map((asset) => fromServer(asset)))
-          setCourtState(courtValue)
-          writeLocalCourt(session.id, courtValue)
+          setAssets(latest.assets.map((asset) => fromServer(asset)))
+          setCourtState(latest.court ?? null)
+          writeLocalCourt(session.id, latest.court ?? null)
+          publishBallTracks({ ...readLocalBallTracks(session.id), ...tracksById(latest.ballTracks) })
           setStorageWarning('Some files saved in this browser have not reached the server yet.')
         }
       } catch (error) {
@@ -249,6 +298,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setBackend('offline')
         backendRef.current = 'offline'
         setCourtState(readLocalCourt(id))
+        publishBallTracks(readLocalBallTracks(id))
         try {
           setAssets(await localAssets())
           setStorageWarning('The server is offline. Captures stay in this browser until it is back.')
@@ -265,7 +315,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false
     }
-  }, [])
+  }, [publishBallTracks])
 
   useEffect(() => {
     return () => {
@@ -282,13 +332,28 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       storageWarning,
       sessionId,
       court,
+      ballTracks,
       backend,
       addAsset,
       removeAsset,
       noteCameras,
       setCourt,
+      setBallTrack,
     }),
-    [assets, ready, storageWarning, sessionId, court, backend, addAsset, removeAsset, noteCameras, setCourt],
+    [
+      assets,
+      ready,
+      storageWarning,
+      sessionId,
+      court,
+      ballTracks,
+      backend,
+      addAsset,
+      removeAsset,
+      noteCameras,
+      setCourt,
+      setBallTrack,
+    ],
   )
 
   return (

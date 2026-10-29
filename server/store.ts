@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs'
-import { readFile, unlink, writeFile } from 'node:fs/promises'
+import { unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import {
@@ -8,6 +8,7 @@ import {
   POSE_MODEL_ID,
   type AiModel,
   type AiSnapshot,
+  type BallTrack,
   type CameraRecord,
   type CourtCalibration,
   type Device,
@@ -57,6 +58,11 @@ const schema = `
   CREATE TABLE IF NOT EXISTS courts (
     session_id TEXT PRIMARY KEY,
     court_json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS ball_tracks (
+    asset_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    track_json TEXT NOT NULL
   );
 `
 
@@ -191,7 +197,44 @@ export function getSession(id: string): SessionDetail | undefined {
     cameras: camerasFor(id),
     assets: assetsFor(id),
     court: readCourt(id),
+    ballTracks: readBallTracks(id),
   }
+}
+
+function readBallTracks(sessionId: string): BallTrack[] {
+  const rows = database()
+    .prepare(
+      `SELECT b.track_json FROM ball_tracks b JOIN assets a ON a.id = b.asset_id
+       WHERE b.session_id = ? ORDER BY a.created_at DESC`,
+    )
+    .all(sessionId) as { track_json: string }[]
+  const tracks: BallTrack[] = []
+  for (const row of rows) {
+    try {
+      tracks.push(JSON.parse(row.track_json) as BallTrack)
+    } catch {
+      // A broken row is skipped; the video can be tracked again.
+    }
+  }
+  return tracks
+}
+
+export function saveBallTrack(assetId: string, track: BallTrack | null) {
+  const asset = database().prepare('SELECT session_id FROM assets WHERE id = ?').get(assetId) as
+    | { session_id: string }
+    | undefined
+  if (!asset) return undefined
+  if (!track) {
+    database().prepare('DELETE FROM ball_tracks WHERE asset_id = ?').run(assetId)
+  } else {
+    database()
+      .prepare(
+        'INSERT INTO ball_tracks (asset_id, session_id, track_json) VALUES (?, ?, ?) ON CONFLICT(asset_id) DO UPDATE SET track_json = excluded.track_json',
+      )
+      .run(assetId, asset.session_id, JSON.stringify(track))
+  }
+  database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), asset.session_id)
+  return getSession(asset.session_id)
 }
 
 export function readCourt(sessionId: string): CourtCalibration | null {
@@ -342,19 +385,13 @@ export function readAssetFile(id: string) {
   return { mimeType: row.mime_type, path: mediaPath(id) }
 }
 
-export async function readMedia(id: string) {
-  const file = readAssetFile(id)
-  if (!file) return undefined
-  const bytes = await readFile(file.path)
-  return { mimeType: file.mimeType, bytes }
-}
-
 export async function deleteAsset(id: string) {
   const row = database().prepare('SELECT id, session_id FROM assets WHERE id = ?').get(id) as
     | { id: string; session_id: string }
     | undefined
   if (!row) return false
   database().prepare('DELETE FROM assets WHERE id = ?').run(id)
+  database().prepare('DELETE FROM ball_tracks WHERE asset_id = ?').run(id)
   database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), row.session_id)
   await unlink(mediaPath(id)).catch(() => undefined)
   return true

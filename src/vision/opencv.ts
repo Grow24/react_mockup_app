@@ -32,14 +32,17 @@ function readyCv(value: unknown): OpenCv | null {
   return cv
 }
 
-let pending: Promise<OpenCv> | null = null
+// The Emscripten module has its own `then`, so resolving a Promise with it never settles.
+type Loaded = { cv: OpenCv }
+
+let pending: Promise<Loaded> | null = null
 
 export function loadOpenCv() {
   if (typeof window === 'undefined') return Promise.reject(new Error('OpenCV.js runs in the browser.'))
   const current = readyCv((window as unknown as { cv?: unknown }).cv)
-  if (current) return Promise.resolve(current)
+  if (current) return Promise.resolve<Loaded>({ cv: current })
   if (!pending) {
-    pending = new Promise<OpenCv>((resolve, reject) => {
+    pending = new Promise<Loaded>((resolve, reject) => {
       const script = document.createElement('script')
       script.src = OPENCV_URL
       script.async = true
@@ -57,7 +60,7 @@ export function loadOpenCv() {
         cv.then((ready) => {
           const started = readyCv(ready)
           if (started) {
-            resolve(started)
+            resolve({ cv: started })
             return
           }
           pending = null
@@ -74,6 +77,29 @@ function flat(points: CourtPoint[]) {
   return points.flatMap((point) => [point.x, point.y])
 }
 
+export async function projectToCourt(preset: CourtPreset, imagePoints: CourtPoint[], points: CourtPoint[]) {
+  const { cv } = await loadOpenCv()
+  if (points.length === 0) return []
+  const created: CvMat[] = []
+  try {
+    const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(imagePoints))
+    const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(destinationCorners(preset)))
+    created.push(srcPts, dstPts)
+    const matrix = cv.getPerspectiveTransform(srcPts, dstPts)
+    created.push(matrix)
+    const input = cv.matFromArray(points.length, 1, cv.CV_32FC2, flat(points))
+    const output = new cv.Mat()
+    created.push(input, output)
+    cv.perspectiveTransform(input, output, matrix)
+    return points.map((_, index) => ({
+      x: output.data32F[index * 2] ?? 0,
+      y: output.data32F[index * 2 + 1] ?? 0,
+    }))
+  } finally {
+    for (const mat of created) mat.delete()
+  }
+}
+
 export async function renderCourt(
   image: HTMLImageElement,
   canvas: HTMLCanvasElement,
@@ -84,7 +110,7 @@ export async function renderCourt(
   markers: { label: string; point: CourtPoint }[],
   isCurrent: () => boolean,
 ) {
-  const cv = await loadOpenCv()
+  const { cv } = await loadOpenCv()
   if (!isCurrent() || image.naturalWidth < 2 || image.naturalHeight < 2) return []
   const scaleX = image.naturalWidth / sourceWidth
   const scaleY = image.naturalHeight / sourceHeight

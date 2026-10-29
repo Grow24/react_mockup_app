@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { jpegFromVideo } from '../camera/webcodecs'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
+import { BallOverlay, BallPanel } from '../components/BallTracking'
 import { CourtPlane } from '../components/CourtPlane'
 import { SkeletonView } from '../components/SkeletonView'
 import { formatPercent, formatPerformance, formatWhen } from '../format'
@@ -17,7 +18,18 @@ function worldReady(snapshot: AiSnapshot | undefined) {
 }
 
 export function Results() {
-  const { assets, ready, storageWarning, backend, court, addAsset, removeAsset, setCourt } = useSession()
+  const {
+    assets,
+    ready,
+    storageWarning,
+    backend,
+    court,
+    ballTracks,
+    addAsset,
+    removeAsset,
+    setCourt,
+    setBallTrack,
+  } = useSession()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [frameReady, setFrameReady] = useState(false)
   const [savingFrame, setSavingFrame] = useState(false)
@@ -26,6 +38,7 @@ export function Results() {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const poseFrameRef = useRef<HTMLDivElement | null>(null)
   const selected = assets.find((asset) => asset.id === selectedId) ?? assets[0]
+  const ballTrack = selected?.kind === 'video' ? (ballTracks[selected.id] ?? null) : null
 
   useEffect(() => {
     setFrameReady(false)
@@ -82,7 +95,8 @@ export function Results() {
             : ' The server is offline, so these stay in this browser.'}{' '}
           A photo keeps the boxes, the 2D skeleton, and the 3D pose from the moment it was taken.
           Click its four court corners to flatten the ground into meters. A video keeps the last
-          analyzed frame. Save the frame on screen to turn that moment into a photo.
+          analyzed frame. Save the frame on screen to turn that moment into a photo, or track the
+          ball through the whole video.
         </p>
       </div>
 
@@ -135,14 +149,17 @@ export function Results() {
                 </div>
               ) : (
                 <div className="video-still">
-                  <video
-                    key={selected.id}
-                    ref={videoRef}
-                    src={selected.url}
-                    controls
-                    playsInline
-                    onLoadedData={() => setFrameReady(true)}
-                  />
+                  <div className="ball-frame">
+                    <video
+                      key={selected.id}
+                      ref={videoRef}
+                      src={selected.url}
+                      controls
+                      playsInline
+                      onLoadedData={() => setFrameReady(true)}
+                    />
+                    {ballTrack ? <BallOverlay videoRef={videoRef} track={ballTrack} /> : null}
+                  </div>
                   <button
                     type="button"
                     className="secondary"
@@ -163,6 +180,19 @@ export function Results() {
                 {selected.width && selected.height ? ` · ${selected.width}×${selected.height}` : ''}
               </figcaption>
             </figure>
+
+            {selected.kind === 'video' ? (
+              <BallPanel
+                key={selected.id}
+                assetId={selected.id}
+                url={selected.url}
+                videoRef={videoRef}
+                track={ballTrack}
+                court={court}
+                onSave={(track) => setBallTrack(selected.id, track)}
+                onClear={() => setBallTrack(selected.id, null)}
+              />
+            ) : null}
 
             {selected.kind === 'video' && selected.snapshot && selected.width && selected.height ? (
               <div className="still-pose">

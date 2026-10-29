@@ -8,13 +8,23 @@ import {
   getSession,
   listModels,
   openStore,
-  readMedia,
+  readAssetFile,
+  saveBallTrack,
   saveCourt,
   saveAsset,
   saveCameras,
   saveSession,
 } from './store.ts'
-import type { AiSnapshot, CameraRecord, CourtCalibration, CourtPreset, Device } from '../shared/contracts.ts'
+import {
+  BALL_TRACK_LIMIT,
+  type AiSnapshot,
+  type BallPoint,
+  type BallTrack,
+  type CameraRecord,
+  type CourtCalibration,
+  type CourtPreset,
+  type Device,
+} from '../shared/contracts.ts'
 
 function listenPort() {
   const raw = (process.env.PORT || process.env.PBMP_PORT || '8787').trim()
@@ -164,6 +174,50 @@ function asCourt(value: unknown): CourtCalibration | undefined {
     sourceWidth: court.sourceWidth,
     sourceHeight: court.sourceHeight,
     imagePoints,
+  }
+}
+
+function finiteIn(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max
+}
+
+function asBallTrack(value: unknown, assetId: string): BallTrack | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const track = value as Partial<BallTrack>
+  if (track.assetId !== assetId) return undefined
+  if (typeof track.modelId !== 'string' || !/^[a-z0-9-]{1,80}$/.test(track.modelId)) return undefined
+  if (!finiteIn(track.sourceWidth, 2, 8000) || !finiteIn(track.sourceHeight, 2, 8000)) return undefined
+  if (!finiteIn(track.sampleFps, 1, 60) || !finiteIn(track.duration, 0, 3600)) return undefined
+  if (!finiteIn(track.createdAt, 0, Number.MAX_SAFE_INTEGER)) return undefined
+  if (!Array.isArray(track.points) || track.points.length > BALL_TRACK_LIMIT) return undefined
+  const width = track.sourceWidth
+  const height = track.sourceHeight
+  const points: BallPoint[] = []
+  for (const item of track.points) {
+    if (!item || typeof item !== 'object') return undefined
+    const point = item as Partial<BallPoint>
+    if (
+      !finiteIn(point.t, 0, 3600) ||
+      !finiteIn(point.x, -width, width * 2) ||
+      !finiteIn(point.y, -height, height * 2) ||
+      !finiteIn(point.radius, 0, Math.max(width, height)) ||
+      !finiteIn(point.score, 0, 1)
+    ) {
+      return undefined
+    }
+    const next: BallPoint = { t: point.t, x: point.x, y: point.y, radius: point.radius, score: point.score }
+    if (point.bounce === true) next.bounce = true
+    points.push(next)
+  }
+  return {
+    assetId,
+    modelId: track.modelId,
+    sourceWidth: width,
+    sourceHeight: height,
+    sampleFps: track.sampleFps,
+    duration: track.duration,
+    createdAt: track.createdAt,
+    points,
   }
 }
 
@@ -445,18 +499,65 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       sendJson(res, 400, { error: 'Asset id is not valid.' })
       return
     }
-    const media = await readMedia(parts[2]!)
-    if (!media) {
+    const file = readAssetFile(parts[2]!)
+    const size = file && existsSync(file.path) ? statSync(file.path).size : -1
+    if (!file || size < 0) {
       sendJson(res, 404, { error: 'File was not found.' })
       return
     }
     cors(res)
-    res.writeHead(200, {
-      'Content-Type': media.mimeType,
-      'Content-Length': media.bytes.byteLength,
-      'Cache-Control': 'no-store',
-    })
-    res.end(media.bytes)
+    const headers = { 'Content-Type': file.mimeType, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store' }
+    // Browsers can only seek a video when the server answers byte ranges.
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
+    if (range && (range[1] || range[2])) {
+      const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]))
+      const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1
+      if (start >= size || start > end) {
+        res.writeHead(416, { ...headers, 'Content-Range': `bytes */${size}` })
+        res.end()
+        return
+      }
+      res.writeHead(206, { ...headers, 'Content-Length': end - start + 1, 'Content-Range': `bytes ${start}-${end}/${size}` })
+      await pipeline(createReadStream(file.path, { start, end }), res).catch(() => undefined)
+      return
+    }
+    res.writeHead(200, { ...headers, 'Content-Length': size })
+    await pipeline(createReadStream(file.path), res).catch(() => undefined)
+    return
+  }
+
+  if (
+    parts[0] === 'api' &&
+    parts[1] === 'assets' &&
+    parts[3] === 'ball-track' &&
+    parts.length === 4 &&
+    (req.method === 'PUT' || req.method === 'DELETE')
+  ) {
+    const assetId = parts[2]!
+    if (!isUuid(assetId)) {
+      sendJson(res, 400, { error: 'Asset id is not valid.' })
+      return
+    }
+    let track: BallTrack | null = null
+    if (req.method === 'PUT') {
+      const body = await readBody(req)
+      if (!body) {
+        sendJson(res, 413, { error: 'Ball track is too large.' })
+        return
+      }
+      const parsed = asBallTrack(body, assetId)
+      if (!parsed) {
+        sendJson(res, 400, { error: 'Ball track is not valid.' })
+        return
+      }
+      track = parsed
+    }
+    const session = saveBallTrack(assetId, track)
+    if (!session) {
+      sendJson(res, 404, { error: 'File was not found.' })
+      return
+    }
+    sendJson(res, 200, session)
     return
   }
 

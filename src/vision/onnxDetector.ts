@@ -1,4 +1,5 @@
 import type { Detection } from '../types'
+import type { DecodeOptions } from './yolo'
 
 type Ready = { type: 'ready' }
 type Failed = { type: 'error'; message: string }
@@ -67,7 +68,12 @@ export function resetOnnx() {
   waiters.clear()
 }
 
-export async function detectSource(source: CanvasImageSource, width: number, height: number) {
+export async function detectSource(
+  source: CanvasImageSource,
+  width: number,
+  height: number,
+  options?: DecodeOptions,
+) {
   if (busy || width < 2 || height < 2) return null
   busy = true
   try {
@@ -76,7 +82,7 @@ export async function detectSource(source: CanvasImageSource, width: number, hei
     const id = ++nextId
     return await new Promise<{ detections: Detection[]; inferenceMs: number }>((resolve, reject) => {
       waiters.set(id, { resolve, reject })
-      ensureWorker().postMessage({ type: 'detect', id, bitmap, width, height }, [bitmap])
+      ensureWorker().postMessage({ type: 'detect', id, bitmap, width, height, options }, [bitmap])
     })
   } finally {
     busy = false

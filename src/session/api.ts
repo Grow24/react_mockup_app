@@ -1,5 +1,6 @@
 import type {
   AiSnapshot,
+  BallTrack,
   CameraRecord,
   CourtCalibration,
   Device,
@@ -155,6 +156,54 @@ export async function saveRemoteCourt(sessionId: string, court: CourtCalibration
 
 export async function clearRemoteCourt(sessionId: string) {
   const response = await fetch(`/api/sessions/${sessionId}/court`, { method: 'DELETE' })
+  if (response.status === 404) return
+  if (!response.ok) throw new Error(await errorText(response))
+}
+
+export type BallTracks = Record<string, BallTrack>
+
+function ballKey(sessionId: string) {
+  return `pbmp-ball:${sessionId}`
+}
+
+export function tracksById(tracks: BallTrack[] | undefined): BallTracks {
+  const byId: BallTracks = {}
+  for (const track of tracks ?? []) {
+    if (track?.assetId && Array.isArray(track.points)) byId[track.assetId] = track
+  }
+  return byId
+}
+
+export function readLocalBallTracks(sessionId: string): BallTracks {
+  try {
+    const raw = localStorage.getItem(ballKey(sessionId))
+    if (!raw) return {}
+    return tracksById(Object.values(JSON.parse(raw) as BallTracks))
+  } catch {
+    return {}
+  }
+}
+
+export function writeLocalBallTracks(sessionId: string, tracks: BallTracks) {
+  try {
+    if (Object.keys(tracks).length === 0) localStorage.removeItem(ballKey(sessionId))
+    else localStorage.setItem(ballKey(sessionId), JSON.stringify(tracks))
+  } catch {
+    // The track still shows for this visit.
+  }
+}
+
+export async function saveRemoteBallTrack(track: BallTrack) {
+  const response = await fetch(`/api/assets/${track.assetId}/ball-track`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(track),
+  })
+  if (!response.ok) throw new Error(await errorText(response))
+}
+
+export async function clearRemoteBallTrack(assetId: string) {
+  const response = await fetch(`/api/assets/${assetId}/ball-track`, { method: 'DELETE' })
   if (response.status === 404) return
   if (!response.ok) throw new Error(await errorText(response))
 }

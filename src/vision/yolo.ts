@@ -115,13 +115,21 @@ function iou(a: Box, b: Box) {
   return union <= 0 ? 0 : intersection / union
 }
 
+export type DecodeOptions = {
+  classes?: readonly number[]
+  minScore?: number
+}
+
 export function decodeYolo(
   data: Float32Array,
   dims: readonly number[],
   srcWidth: number,
   srcHeight: number,
   inputSize = YOLO_INPUT,
+  options: DecodeOptions = {},
 ): Detection[] {
+  const minScore = options.minScore ?? 0.25
+  const only = options.classes && options.classes.length > 0 ? options.classes : null
   if (dims.length < 3 || srcWidth < 2 || srcHeight < 2) return []
   const channelsFirst = dims[1] === 84 || dims[1] === 85
   const anchors = channelsFirst ? dims[2]! : dims[1]!
@@ -138,6 +146,7 @@ export function decodeYolo(
     let bestClass = 0
     let bestScore = 0
     for (let klass = 0; klass < classCount; klass += 1) {
+      if (only && !only.includes(klass)) continue
       const score = at(anchor, classOffset + klass)
       if (score > bestScore) {
         bestScore = score
@@ -145,7 +154,7 @@ export function decodeYolo(
       }
     }
     if (classOffset === 5) bestScore *= at(anchor, 4)
-    if (bestScore < 0.25) continue
+    if (bestScore < minScore) continue
     const cx = at(anchor, 0)
     const cy = at(anchor, 1)
     const width = at(anchor, 2) / fitted.scale

@@ -125,7 +125,32 @@ export const COURT_PRESETS: Record<CourtPreset, { label: string; widthMeters: nu
   'cricket-pitch': { label: 'Cricket pitch', widthMeters: 3.05, lengthMeters: 20.12 },
 }
 
+export const SPORTS_BALL_CLASS = 32
+
+export type BallPoint = {
+  t: number
+  x: number
+  y: number
+  radius: number
+  score: number
+  bounce?: boolean
+}
+
+export type BallTrack = {
+  assetId: string
+  modelId: string
+  sourceWidth: number
+  sourceHeight: number
+  sampleFps: number
+  duration: number
+  createdAt: number
+  points: BallPoint[]
+}
+
+export const BALL_TRACK_LIMIT = 5000
+
 export type SessionDetail = CaptureSession & {
   assets: MediaAssetRecord[]
   court: CourtCalibration | null
+  ballTracks: BallTrack[]
 }

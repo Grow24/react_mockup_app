@@ -1,5 +1,5 @@
 import * as ort from 'onnxruntime-web/wasm'
-import { decodeYolo, letterbox, YOLO_INPUT, YOLO_MODEL_URL } from './yolo'
+import { decodeYolo, letterbox, YOLO_INPUT, YOLO_MODEL_URL, type DecodeOptions } from './yolo'
 
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/'
 ort.env.wasm.numThreads = 1
@@ -35,7 +35,16 @@ function tensorFrom(bitmap: ImageBitmap, srcWidth: number, srcHeight: number) {
   return new ort.Tensor('float32', input, [1, 3, YOLO_INPUT, YOLO_INPUT])
 }
 
-self.onmessage = (event: MessageEvent<{ type: string; id?: number; bitmap?: ImageBitmap; width?: number; height?: number }>) => {
+self.onmessage = (
+  event: MessageEvent<{
+    type: string
+    id?: number
+    bitmap?: ImageBitmap
+    width?: number
+    height?: number
+    options?: DecodeOptions
+  }>,
+) => {
   const message = event.data
   if (message.type === 'load') {
     loadSession()
@@ -51,6 +60,7 @@ self.onmessage = (event: MessageEvent<{ type: string; id?: number; bitmap?: Imag
   const id = message.id
   const width = message.width
   const height = message.height
+  const options = message.options
   const started = performance.now()
   loadSession()
     .then(async (loaded) => {
@@ -59,7 +69,7 @@ self.onmessage = (event: MessageEvent<{ type: string; id?: number; bitmap?: Imag
       const output = await loaded.run(feeds)
       const first = output[loaded.outputNames[0]!]
       const detections = first
-        ? decodeYolo(first.data as Float32Array, first.dims, width, height)
+        ? decodeYolo(first.data as Float32Array, first.dims, width, height, YOLO_INPUT, options)
         : []
       self.postMessage({ type: 'result', id, detections, inferenceMs: performance.now() - started })
     })

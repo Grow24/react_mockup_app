@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { CameraRecord, CourtCalibration } from '../../shared/contracts.ts'
+import type { BallTrack, CameraRecord, CourtCalibration } from '../../shared/contracts.ts'
 import type { MediaAsset, NewMediaAsset } from '../types'
 
 export type BackendStatus = 'online' | 'offline'
@@ -11,10 +11,12 @@ export type SessionValue = {
   sessionId: string | null
   backend: BackendStatus
   court: CourtCalibration | null
+  ballTracks: Record<string, BallTrack>
   addAsset: (input: NewMediaAsset) => string
   removeAsset: (id: string) => void
   noteCameras: (cameras: CameraRecord[]) => void
   setCourt: (court: CourtCalibration | null) => void
+  setBallTrack: (assetId: string, track: BallTrack | null) => void
 }
 
 export const SessionContext = createContext<SessionValue | null>(null)
