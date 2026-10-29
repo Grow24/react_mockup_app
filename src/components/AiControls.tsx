@@ -1,5 +1,6 @@
 import { formatPercent, formatPerformance } from '../format'
 import { useAi } from '../vision/context'
+import { OBJECT_MODEL_ID, ONNX_MODEL_ID, type ObjectDetectorId } from '../vision/yolo'
 
 function statusLabel(status: string) {
   if (status === 'loading') return 'Loading'
@@ -45,11 +46,36 @@ export function AiControls() {
         </p>
       ) : null}
       {ai.status === 'loading' ? (
-        <p className="muted">Starting the models. The first time downloads them and can take a moment.</p>
+        <p className="muted">
+          {ai.objectDetector === ONNX_MODEL_ID
+            ? 'Downloading YOLOv8n. The first time is about 12 MB. Capture still works.'
+            : 'Starting the models. The first time downloads them and can take a moment.'}
+        </p>
       ) : null}
-      {ai.status === 'ready' && ai.delegate ? (
+      {ai.status === 'ready' && ai.objectDetector === ONNX_MODEL_ID ? (
+        <p className="muted">
+          YOLOv8n is running in a worker. Pose still uses MediaPipe
+          {ai.delegate ? ` on ${ai.delegate}` : ''}.
+        </p>
+      ) : null}
+      {ai.status === 'ready' && ai.objectDetector === OBJECT_MODEL_ID && ai.delegate ? (
         <p className="muted">MediaPipe is running on {ai.delegate}.</p>
       ) : null}
+
+      <label className="field">
+        <span>Object model</span>
+        <select
+          value={ai.objectDetector}
+          onChange={(event) => ai.setObjectDetector(event.target.value as ObjectDetectorId)}
+        >
+          <option value={OBJECT_MODEL_ID}>MediaPipe EfficientDet</option>
+          <option value={ONNX_MODEL_ID}>ONNX YOLOv8n, Roboflow layout</option>
+        </select>
+      </label>
+      <p className="muted">
+        Both models draw the same boxes. A Roboflow YOLOv8 ONNX export can replace this file later.
+        The skeleton does not change.
+      </p>
 
       <label className="field">
         <span>Confidence {formatPercent(ai.confidence)}</span>

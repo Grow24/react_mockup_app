@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useSession } from '../session/context'
 import type { AiSnapshot, CameraInfo, CameraStatus, LiveCamera, NumericRange } from '../types'
+import { jpegFromVideo } from './webcodecs'
 
 const MIME_CANDIDATES = [
   'video/webm;codecs=vp9',
@@ -273,39 +274,30 @@ export function useCamera(
   async function capturePhoto() {
     const video = previewRef.current
     const info = liveRef.current
-    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) {
-      setCaptureMessage('Wait until the preview is visible, then capture.')
+    if (!video) {
+      setCaptureMessage('Wait until a frame is visible, then try again.')
       return
     }
 
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    const context = canvas.getContext('2d')
-    if (!context) {
-      setCaptureMessage('Could not read a frame from the preview.')
-      return
+    try {
+      const still = await jpegFromVideo(video)
+      addAsset({
+        kind: 'photo',
+        blob: still.blob,
+        mimeType: 'image/jpeg',
+        cameraLabel: info?.label ?? 'Camera',
+        width: still.width,
+        height: still.height,
+        snapshot: readSnapshot(),
+      })
+      setCaptureMessage(
+        still.path === 'webcodecs'
+          ? 'Photo saved with WebCodecs VideoFrame.'
+          : 'Photo saved from the preview.',
+      )
+    } catch (error) {
+      setCaptureMessage(error instanceof Error ? error.message : 'Could not save a JPEG from this frame.')
     }
-    context.drawImage(video, 0, 0)
-
-    const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob((result) => resolve(result), 'image/jpeg', 0.92)
-    })
-    if (!blob) {
-      setCaptureMessage('Could not save a JPEG from this frame.')
-      return
-    }
-
-    addAsset({
-      kind: 'photo',
-      blob,
-      mimeType: 'image/jpeg',
-      cameraLabel: info?.label ?? 'Camera',
-      width: canvas.width,
-      height: canvas.height,
-      snapshot: readSnapshot(),
-    })
-    setCaptureMessage('Photo saved to this session.')
   }
 
   useEffect(() => {

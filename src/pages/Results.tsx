@@ -1,6 +1,8 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { jpegFromVideo } from '../camera/webcodecs'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
+import { CourtPlane } from '../components/CourtPlane'
 import { SkeletonView } from '../components/SkeletonView'
 import { formatPercent, formatPerformance, formatWhen } from '../format'
 import { useSession } from '../session/context'
@@ -15,11 +17,48 @@ function worldReady(snapshot: AiSnapshot | undefined) {
 }
 
 export function Results() {
-  const { assets, ready, storageWarning, backend, removeAsset } = useSession()
+  const { assets, ready, storageWarning, backend, court, addAsset, removeAsset, setCourt } = useSession()
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [frameReady, setFrameReady] = useState(false)
+  const [savingFrame, setSavingFrame] = useState(false)
+  const [frameMessage, setFrameMessage] = useState<string | null>(null)
   const photoRef = useRef<HTMLImageElement | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   const poseFrameRef = useRef<HTMLDivElement | null>(null)
   const selected = assets.find((asset) => asset.id === selectedId) ?? assets[0]
+
+  useEffect(() => {
+    setFrameReady(false)
+    setFrameMessage(null)
+  }, [selected?.id])
+
+  async function saveDisplayedFrame() {
+    const video = videoRef.current
+    if (!video || !selected || selected.kind !== 'video') return
+    setSelectedId(selected.id)
+    setSavingFrame(true)
+    setFrameMessage(null)
+    try {
+      const still = await jpegFromVideo(video)
+      addAsset({
+        kind: 'photo',
+        blob: still.blob,
+        mimeType: 'image/jpeg',
+        cameraLabel: selected.cameraLabel,
+        width: still.width,
+        height: still.height,
+      })
+      setFrameMessage(
+        still.path === 'webcodecs'
+          ? 'Frame saved with WebCodecs. Open the new photo to mark the court.'
+          : 'Frame saved from the video. Open the new photo to mark the court.',
+      )
+    } catch (error) {
+      setFrameMessage(error instanceof Error ? error.message : 'Could not save a JPEG from this frame.')
+    } finally {
+      setSavingFrame(false)
+    }
+  }
 
   if (!ready) {
     return (
@@ -41,8 +80,9 @@ export function Results() {
           {backend === 'online'
             ? ' The session link in the header opens the same files in another browser.'
             : ' The server is offline, so these stay in this browser.'}{' '}
-          A photo keeps the boxes, the 2D skeleton, and the 3D pose from the moment it was taken. A
-          video keeps the last analyzed frame, including how fast that pass was.
+          A photo keeps the boxes, the 2D skeleton, and the 3D pose from the moment it was taken.
+          Click its four court corners to flatten the ground into meters. A video keeps the last
+          analyzed frame. Save the frame on screen to turn that moment into a photo.
         </p>
       </div>
 
@@ -70,13 +110,22 @@ export function Results() {
               </button>
             </header>
             <figure>
-              {selected.kind === 'photo' ? (
+              {selected.kind === 'photo' && selected.width && selected.height ? (
+                <CourtPlane
+                  key={selected.id}
+                  assetId={selected.id}
+                  imageUrl={selected.url}
+                  alt={`Photo from ${selected.cameraLabel}`}
+                  sourceWidth={selected.width}
+                  sourceHeight={selected.height}
+                  snapshot={selected.snapshot}
+                  saved={court}
+                  onSave={setCourt}
+                  onClear={() => setCourt(null)}
+                />
+              ) : selected.kind === 'photo' ? (
                 <div className="annotated">
-                  <img
-                    ref={photoRef}
-                    src={selected.url}
-                    alt={`Photo from ${selected.cameraLabel}`}
-                  />
+                  <img ref={photoRef} src={selected.url} alt={`Photo from ${selected.cameraLabel}`} />
                   <AnnotationCanvas
                     frameRef={photoRef}
                     sourceWidth={selected.width ?? 0}
@@ -85,7 +134,29 @@ export function Results() {
                   />
                 </div>
               ) : (
-                <video key={selected.id} src={selected.url} controls playsInline />
+                <div className="video-still">
+                  <video
+                    key={selected.id}
+                    ref={videoRef}
+                    src={selected.url}
+                    controls
+                    playsInline
+                    onLoadedData={() => setFrameReady(true)}
+                  />
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!frameReady || savingFrame}
+                    onClick={() => void saveDisplayedFrame()}
+                  >
+                    Save this frame
+                  </button>
+                  {frameMessage ? (
+                    <p className="note" role="status">
+                      {frameMessage}
+                    </p>
+                  ) : null}
+                </div>
               )}
               <figcaption>
                 {selected.cameraLabel} · {formatWhen(selected.createdAt)}

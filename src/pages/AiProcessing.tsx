@@ -10,10 +10,10 @@ export function AiProcessing() {
       <div className="screen-intro">
         <h2>AI Processing</h2>
         <p>
-          Object labels come from MediaPipe EfficientDet. The skeleton comes from the Pose
-          Landmarker. Both draw on the camera preview. A capture keeps that pose, and Results can
-          turn it in 3D. The timing line is how many passes finished, how long they took, and how
-          many camera frames were skipped while a pass was still running.
+          Object labels come from MediaPipe EfficientDet, or from YOLOv8n in the same ONNX layout
+          Roboflow exports. The skeleton stays on the Pose Landmarker. A capture keeps that pose,
+          and Results can turn it in 3D. The timing line is how many passes finished, how long they
+          took, and how many camera frames were skipped while a pass was still running.
         </p>
       </div>
 

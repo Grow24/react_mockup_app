@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { CameraRecord, MediaAssetRecord } from '../../shared/contracts.ts'
+import type { CameraRecord, CourtCalibration, MediaAssetRecord } from '../../shared/contracts.ts'
 import type { MediaAsset, NewMediaAsset } from '../types'
 import {
   assetUrl,
+  clearRemoteCourt,
   deleteRemoteAsset,
   fetchSession,
   openSession,
+  readLocalCourt,
   rememberedSessionId,
   rememberSessionId,
   saveCameras,
+  saveRemoteCourt,
   snapshotOf,
   thisDevice,
   uploadAsset,
+  writeLocalCourt,
 } from './api'
 import { deleteStored, loadStored, saveStored, type StoredAsset } from './db'
 import { SessionContext, type BackendStatus } from './context'
@@ -53,6 +57,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false)
   const [storageWarning, setStorageWarning] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [court, setCourtState] = useState<CourtCalibration | null>(null)
   const [backend, setBackend] = useState<BackendStatus>('offline')
   const assetsRef = useRef(assets)
   const sessionRef = useRef<string | null>(null)
@@ -115,6 +120,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
               : 'The server is offline. This file stays in this browser until it is back.',
           )
         })
+      return asset.id
     },
     [publishRemote, rememberAsset],
   )
@@ -132,6 +138,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setStorageWarning('Removed here, but the server copy may still be there.')
       })
     }
+  }, [])
+
+  const setCourt = useCallback((next: CourtCalibration | null) => {
+    setCourtState(next)
+    const id = sessionRef.current
+    if (!id) return
+    writeLocalCourt(id, next)
+    if (backendRef.current !== 'online') return
+    const request = next ? saveRemoteCourt(id, next) : clearRemoteCourt(id)
+    void request.catch((error) => {
+      console.error(error)
+      setStorageWarning('The court stays in this browser. The server did not keep it.')
+    })
   }, [])
 
   const noteCameras = useCallback((cameras: CameraRecord[]) => {
@@ -198,29 +217,38 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         backendRef.current = 'online'
         const remoteIds = new Set(session.assets.map((asset) => asset.id))
         let records = session.assets
+        let courtValue = session.court ?? null
         try {
           await syncLocal(session.id, remoteIds)
           const fresh = await fetchSession(session.id)
-          if (fresh) records = fresh.assets
+          if (fresh) {
+            records = fresh.assets
+            courtValue = fresh.court ?? null
+          }
           if (!active) return
           setAssets(records.map((asset) => fromServer(asset)))
+          setCourtState(courtValue)
+          writeLocalCourt(session.id, courtValue)
           setStorageWarning(null)
         } catch (error) {
           if (!active) return
           console.error(error)
           setAssets(records.map((asset) => fromServer(asset)))
+          setCourtState(courtValue)
+          writeLocalCourt(session.id, courtValue)
           setStorageWarning('Some files saved in this browser have not reached the server yet.')
         }
       } catch (error) {
         if (!active) return
         console.error(error)
-        sessionRef.current = asked ? null : id
+        sessionRef.current = id
         if (!asked) {
           rememberSessionId(id)
           setSessionId(id)
         }
         setBackend('offline')
         backendRef.current = 'offline'
+        setCourtState(readLocalCourt(id))
         try {
           setAssets(await localAssets())
           setStorageWarning('The server is offline. Captures stay in this browser until it is back.')
@@ -253,12 +281,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ready,
       storageWarning,
       sessionId,
+      court,
       backend,
       addAsset,
       removeAsset,
       noteCameras,
+      setCourt,
     }),
-    [assets, ready, storageWarning, sessionId, backend, addAsset, removeAsset, noteCameras],
+    [assets, ready, storageWarning, sessionId, court, backend, addAsset, removeAsset, noteCameras, setCourt],
   )
 
   return (

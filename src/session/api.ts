@@ -1,4 +1,11 @@
-import type { AiSnapshot, CameraRecord, Device, MediaAssetRecord, SessionDetail } from '../../shared/contracts.ts'
+import type {
+  AiSnapshot,
+  CameraRecord,
+  CourtCalibration,
+  Device,
+  MediaAssetRecord,
+  SessionDetail,
+} from '../../shared/contracts.ts'
 
 const SESSION_KEY = 'pbmp-session-id'
 const DEVICE_KEY = 'pbmp-device-id'
@@ -112,6 +119,46 @@ export async function uploadAsset(
   if (!response.ok) throw new Error(await errorText(response))
 }
 
+function courtKey(sessionId: string) {
+  return `pbmp-court:${sessionId}`
+}
+
+export function readLocalCourt(sessionId: string): CourtCalibration | null {
+  try {
+    const raw = localStorage.getItem(courtKey(sessionId))
+    if (!raw) return null
+    const court = JSON.parse(raw) as CourtCalibration
+    if (!court || court.imagePoints?.length !== 4) return null
+    return court
+  } catch {
+    return null
+  }
+}
+
+export function writeLocalCourt(sessionId: string, court: CourtCalibration | null) {
+  try {
+    if (!court) localStorage.removeItem(courtKey(sessionId))
+    else localStorage.setItem(courtKey(sessionId), JSON.stringify(court))
+  } catch {
+    // The calibration still applies for this visit.
+  }
+}
+
+export async function saveRemoteCourt(sessionId: string, court: CourtCalibration) {
+  const response = await fetch(`/api/sessions/${sessionId}/court`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(court),
+  })
+  if (!response.ok) throw new Error(await errorText(response))
+}
+
+export async function clearRemoteCourt(sessionId: string) {
+  const response = await fetch(`/api/sessions/${sessionId}/court`, { method: 'DELETE' })
+  if (response.status === 404) return
+  if (!response.ok) throw new Error(await errorText(response))
+}
+
 export async function deleteRemoteAsset(id: string) {
   const response = await fetch(`/api/assets/${id}`, { method: 'DELETE' })
   if (response.status === 404) return
@@ -133,5 +180,6 @@ export function snapshotOf(record: MediaAssetRecord): AiSnapshot | undefined {
   }
   if (worldPose && worldPose.length > 0) snapshot.worldPose = worldPose
   if (record.inference.performance) snapshot.performance = record.inference.performance
+  if (record.inference.objectModelId) snapshot.objectModelId = record.inference.objectModelId
   return snapshot
 }

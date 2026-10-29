@@ -4,10 +4,12 @@ import path from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import {
   OBJECT_MODEL_ID,
+  ONNX_MODEL_ID,
   POSE_MODEL_ID,
   type AiModel,
   type AiSnapshot,
   type CameraRecord,
+  type CourtCalibration,
   type Device,
   type InferenceResult,
   type MediaAssetRecord,
@@ -52,10 +54,15 @@ const schema = `
     name TEXT NOT NULL,
     task TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS courts (
+    session_id TEXT PRIMARY KEY,
+    court_json TEXT NOT NULL
+  );
 `
 
 const models: AiModel[] = [
   { id: OBJECT_MODEL_ID, name: 'MediaPipe EfficientDet Lite0', task: 'object-detection' },
+  { id: ONNX_MODEL_ID, name: 'YOLOv8n COCO ONNX', task: 'object-detection' },
   { id: POSE_MODEL_ID, name: 'MediaPipe Pose Landmarker Lite', task: 'pose' },
 ]
 
@@ -183,7 +190,37 @@ export function getSession(id: string): SessionDetail | undefined {
     device: JSON.parse(row.device_json) as Device,
     cameras: camerasFor(id),
     assets: assetsFor(id),
+    court: readCourt(id),
   }
+}
+
+export function readCourt(sessionId: string): CourtCalibration | null {
+  const row = database().prepare('SELECT court_json FROM courts WHERE session_id = ?').get(sessionId) as
+    | { court_json: string }
+    | undefined
+  if (!row) return null
+  try {
+    const court = JSON.parse(row.court_json) as CourtCalibration
+    if (!court || court.imagePoints?.length !== 4) return null
+    return court
+  } catch {
+    return null
+  }
+}
+
+export function saveCourt(sessionId: string, court: CourtCalibration | null) {
+  if (!sessionById(sessionId)) return undefined
+  if (!court) {
+    database().prepare('DELETE FROM courts WHERE session_id = ?').run(sessionId)
+  } else {
+    database()
+      .prepare(
+        'INSERT INTO courts (session_id, court_json) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET court_json = excluded.court_json',
+      )
+      .run(sessionId, JSON.stringify(court))
+  }
+  database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), sessionId)
+  return getSession(sessionId)
 }
 
 export function saveSession(id: string, device: Device) {
@@ -255,7 +292,7 @@ export async function saveAsset(
   const inference: InferenceResult | null = asset.snapshot
     ? {
         ...asset.snapshot,
-        objectModelId: OBJECT_MODEL_ID,
+        objectModelId: asset.snapshot.objectModelId || OBJECT_MODEL_ID,
         poseModelId: POSE_MODEL_ID,
       }
     : null

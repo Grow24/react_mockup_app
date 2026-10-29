@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { AiSnapshot } from '../types'
 import { AiContext, type AiStatus } from './context'
 import { loadEngines, resetEngines, type DelegateName, type Engines } from './engine'
+import { prepareOnnx, resetOnnx } from './onnxDetector'
+import { OBJECT_MODEL_ID, ONNX_MODEL_ID, type ObjectDetectorId } from './yolo'
 
 const ENABLED_KEY = 'pbmp-ai-enabled'
 const CONFIDENCE_KEY = 'pbmp-ai-confidence'
+const DETECTOR_KEY = 'pbmp-object-detector'
 
 function readEnabled() {
   try {
@@ -23,6 +26,14 @@ function readConfidence() {
     return Math.min(0.9, Math.max(0.3, value))
   } catch {
     return 0.5
+  }
+}
+
+function readDetector(): ObjectDetectorId {
+  try {
+    return localStorage.getItem(DETECTOR_KEY) === ONNX_MODEL_ID ? ONNX_MODEL_ID : OBJECT_MODEL_ID
+  } catch {
+    return OBJECT_MODEL_ID
   }
 }
 
@@ -45,11 +56,12 @@ function loadError(error: unknown) {
 export function AiProvider({ children }: { children: ReactNode }) {
   const [enabled, setEnabledState] = useState(readEnabled)
   const [confidence, setConfidenceState] = useState(readConfidence)
-  const [status, setStatus] = useState<AiStatus>(readEnabled() ? 'loading' : 'off')
+  const [objectDetector, setObjectDetectorState] = useState<ObjectDetectorId>(readDetector)
   const [error, setError] = useState<string | null>(null)
   const [delegate, setDelegate] = useState<DelegateName | null>(null)
   const [latest, setLatest] = useState<AiSnapshot | null>(null)
   const [engines, setEngines] = useState<Engines | null>(null)
+  const [onnxReady, setOnnxReady] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const latestRef = useRef<AiSnapshot | null>(null)
   const enabledRef = useRef(enabled)
@@ -72,10 +84,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     if (!next) {
       latestRef.current = null
       setLatest(null)
-      setStatus('off')
-      return
     }
-    setStatus('loading')
   }, [])
 
   const setConfidence = useCallback((next: number) => {
@@ -84,9 +93,17 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setConfidenceState(clamped)
   }, [])
 
+  const setObjectDetector = useCallback((next: ObjectDetectorId) => {
+    writeSetting(DETECTOR_KEY, next)
+    setObjectDetectorState(next)
+    setError(null)
+  }, [])
+
   const retry = useCallback(() => {
     resetEngines()
+    resetOnnx()
     setEngines(null)
+    setOnnxReady(false)
     setAttempt((current) => current + 1)
     setEnabled(true)
   }, [setEnabled])
@@ -100,13 +117,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
         if (cancelled) return
         setEngines(loaded)
         setDelegate(loaded.delegate)
-        setStatus('ready')
       })
       .catch((caught) => {
         if (cancelled) return
         console.error(caught)
         setEngines(null)
-        setStatus('error')
         setError(loadError(caught))
       })
 
@@ -115,10 +130,37 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
   }, [enabled, attempt])
 
+  useEffect(() => {
+    if (!enabled || objectDetector !== ONNX_MODEL_ID) return
+    let cancelled = false
+    prepareOnnx()
+      .then(() => {
+        if (!cancelled) setOnnxReady(true)
+      })
+      .catch((caught) => {
+        if (cancelled) return
+        console.error(caught)
+        setOnnxReady(false)
+        setError(loadError(caught))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [enabled, objectDetector, attempt])
+
+  const status: AiStatus = !enabled
+    ? 'off'
+    : error
+      ? 'error'
+      : !engines || (objectDetector === ONNX_MODEL_ID && !onnxReady)
+        ? 'loading'
+        : 'ready'
+
   const value = useMemo(
     () => ({
       enabled,
       confidence,
+      objectDetector,
       status,
       error,
       delegate,
@@ -126,6 +168,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       engines,
       setEnabled,
       setConfidence,
+      setObjectDetector,
       retry,
       publish,
       readSnapshot,
@@ -133,6 +176,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     [
       enabled,
       confidence,
+      objectDetector,
       status,
       error,
       delegate,
@@ -140,6 +184,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       engines,
       setEnabled,
       setConfidence,
+      setObjectDetector,
       retry,
       publish,
       readSnapshot,

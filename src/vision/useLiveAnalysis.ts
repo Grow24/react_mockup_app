@@ -3,18 +3,22 @@ import type { RefObject } from 'react'
 import type { Detection, PosePoint } from '../types'
 import { useAi } from './context'
 import { readDetections, readPose } from './engine'
+import { detectSource } from './onnxDetector'
 import { emptyPerformance, noteInference } from './performance'
+import { ONNX_MODEL_ID } from './yolo'
 
 export function useLiveAnalysis(
   videoRef: RefObject<HTMLVideoElement | null>,
   active: boolean,
 ) {
-  const { engines, confidence, publish } = useAi()
+  const { engines, confidence, objectDetector, publish } = useAi()
   const confidenceRef = useRef(confidence)
+  const detectorRef = useRef(objectDetector)
 
   useEffect(() => {
     confidenceRef.current = confidence
-  }, [confidence])
+    detectorRef.current = objectDetector
+  }, [confidence, objectDetector])
 
   useEffect(() => {
     if (!active || !engines) return
@@ -40,7 +44,7 @@ export function useLiveAnalysis(
       video.requestVideoFrameCallback(countFrame)
     }
 
-    const tick = () => {
+    const tick = async () => {
       if (stopped) return
       if (document.hidden || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) {
         timer = window.setTimeout(tick, 200)
@@ -55,6 +59,16 @@ export function useLiveAnalysis(
           worldPose = reading.worldPose
           inferenceMs = reading.inferenceMs
           mode = 'detect'
+        } else if (detectorRef.current === ONNX_MODEL_ID) {
+          const reading = await detectSource(video, video.videoWidth, video.videoHeight)
+          if (stopped) return
+          if (!reading) {
+            timer = window.setTimeout(tick, 40)
+            return
+          }
+          detections = reading.detections
+          inferenceMs = reading.inferenceMs
+          mode = 'pose'
         } else {
           const reading = readDetections(engines, video)
           detections = reading.detections
@@ -71,11 +85,13 @@ export function useLiveAnalysis(
           worldPose,
           inferenceMs,
           performance: noted.sample,
+          objectModelId: detectorRef.current,
         })
       } catch (error) {
         console.error(error)
       }
 
+      if (stopped) return
       const wait = Math.max(40, 160 - (performance.now() - started))
       timer = window.setTimeout(tick, wait)
     }

@@ -1,12 +1,14 @@
 import { createContext, useContext } from 'react'
 import type { AiSnapshot } from '../types'
 import type { DelegateName, Engines } from './engine'
+import type { ObjectDetectorId } from './yolo'
 
 export type AiStatus = 'off' | 'loading' | 'ready' | 'error'
 
 export type AiValue = {
   enabled: boolean
   confidence: number
+  objectDetector: ObjectDetectorId
   status: AiStatus
   error: string | null
   delegate: DelegateName | null
@@ -14,6 +16,7 @@ export type AiValue = {
   engines: Engines | null
   setEnabled: (enabled: boolean) => void
   setConfidence: (confidence: number) => void
+  setObjectDetector: (detector: ObjectDetectorId) => void
   retry: () => void
   publish: (snapshot: AiSnapshot) => void
   readSnapshot: () => AiSnapshot | null

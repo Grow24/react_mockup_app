@@ -9,11 +9,12 @@ import {
   listModels,
   openStore,
   readMedia,
+  saveCourt,
   saveAsset,
   saveCameras,
   saveSession,
 } from './store.ts'
-import type { AiSnapshot, CameraRecord, Device } from '../shared/contracts.ts'
+import type { AiSnapshot, CameraRecord, CourtCalibration, CourtPreset, Device } from '../shared/contracts.ts'
 
 function listenPort() {
   const raw = (process.env.PORT || process.env.PBMP_PORT || '8787').trim()
@@ -131,6 +132,41 @@ function asPose(value: unknown, requireZ: boolean) {
   return points
 }
 
+function asCourt(value: unknown): CourtCalibration | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const court = value as Partial<CourtCalibration>
+  if (court.preset !== 'tennis-doubles' && court.preset !== 'cricket-pitch') return undefined
+  if (typeof court.assetId !== 'string' || !isUuid(court.assetId)) return undefined
+  if (
+    typeof court.sourceWidth !== 'number' ||
+    typeof court.sourceHeight !== 'number' ||
+    court.sourceWidth < 2 ||
+    court.sourceHeight < 2 ||
+    court.sourceWidth > 8000 ||
+    court.sourceHeight > 8000
+  ) {
+    return undefined
+  }
+  if (!Array.isArray(court.imagePoints) || court.imagePoints.length !== 4) return undefined
+  const imagePoints = []
+  for (const item of court.imagePoints) {
+    if (!item || typeof item !== 'object') return undefined
+    const point = item as Partial<CourtCalibration['imagePoints'][number]>
+    if (typeof point.x !== 'number' || typeof point.y !== 'number') return undefined
+    if (point.x < -50 || point.y < -50 || point.x > court.sourceWidth + 50 || point.y > court.sourceHeight + 50) {
+      return undefined
+    }
+    imagePoints.push({ x: point.x, y: point.y })
+  }
+  return {
+    preset: court.preset as CourtPreset,
+    assetId: court.assetId,
+    sourceWidth: court.sourceWidth,
+    sourceHeight: court.sourceHeight,
+    imagePoints,
+  }
+}
+
 function asPerformance(value: unknown) {
   if (!value || typeof value !== 'object') return undefined
   const sample = value as Partial<NonNullable<AiSnapshot['performance']>>
@@ -172,6 +208,9 @@ function asSnapshot(value: unknown): AiSnapshot | null | undefined {
   }
   if (worldPose && worldPose.length > 0) next.worldPose = worldPose
   if (performance) next.performance = performance
+  if (typeof snapshot.objectModelId === 'string' && /^[a-z0-9-]{1,80}$/.test(snapshot.objectModelId)) {
+    next.objectModelId = snapshot.objectModelId
+  }
   return next
 }
 
@@ -269,6 +308,45 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       return
     }
     const session = saveCameras(parts[2]!, cameras)
+    if (!session) {
+      sendJson(res, 404, { error: 'Session was not found.' })
+      return
+    }
+    sendJson(res, 200, session)
+    return
+  }
+
+  if (
+    parts[0] === 'api' &&
+    parts[1] === 'sessions' &&
+    parts[3] === 'court' &&
+    parts.length === 4 &&
+    (req.method === 'PUT' || req.method === 'DELETE')
+  ) {
+    if (!isUuid(parts[2]!)) {
+      sendJson(res, 400, { error: 'Session id is not valid.' })
+      return
+    }
+    if (req.method === 'DELETE') {
+      const session = saveCourt(parts[2]!, null)
+      if (!session) {
+        sendJson(res, 404, { error: 'Session was not found.' })
+        return
+      }
+      sendJson(res, 200, session)
+      return
+    }
+    const body = await readBody(req)
+    if (!body) {
+      sendJson(res, 413, { error: 'Court calibration is too large.' })
+      return
+    }
+    const court = asCourt(body)
+    if (!court) {
+      sendJson(res, 400, { error: 'Court calibration is not valid.' })
+      return
+    }
+    const session = saveCourt(parts[2]!, court)
     if (!session) {
       sendJson(res, 404, { error: 'Session was not found.' })
       return

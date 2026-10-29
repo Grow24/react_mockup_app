@@ -24,6 +24,9 @@ function pbmpBackend(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), pbmpBackend()],
+  optimizeDeps: {
+    exclude: ['onnxruntime-web'],
+  },
   server: {
     proxy: {
       '/api': 'http://127.0.0.1:8787',

@@ -38,9 +38,11 @@ export type AiSnapshot = {
   worldPose?: PosePoint[]
   inferenceMs: number
   performance?: InferencePerformance
+  objectModelId?: string
 }
 
 export const OBJECT_MODEL_ID = 'mediapipe-efficientdet-lite0'
+export const ONNX_MODEL_ID = 'yolov8n-coco-onnx'
 export const POSE_MODEL_ID = 'mediapipe-pose-landmarker-lite'
 
 export type AiModel = {
@@ -103,6 +105,27 @@ export type MediaAssetRecord = {
   spatial: SpatialResult | null
 }
 
+export type CourtPreset = 'tennis-doubles' | 'cricket-pitch'
+
+export type CourtPoint = {
+  x: number
+  y: number
+}
+
+export type CourtCalibration = {
+  preset: CourtPreset
+  assetId: string
+  sourceWidth: number
+  sourceHeight: number
+  imagePoints: CourtPoint[]
+}
+
+export const COURT_PRESETS: Record<CourtPreset, { label: string; widthMeters: number; lengthMeters: number }> = {
+  'tennis-doubles': { label: 'Tennis doubles', widthMeters: 10.97, lengthMeters: 23.77 },
+  'cricket-pitch': { label: 'Cricket pitch', widthMeters: 3.05, lengthMeters: 20.12 },
+}
+
 export type SessionDetail = CaptureSession & {
   assets: MediaAssetRecord[]
+  court: CourtCalibration | null
 }

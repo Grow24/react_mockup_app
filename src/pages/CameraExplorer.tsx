@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useCamera } from '../camera/useCamera'
 import { AiControls } from '../components/AiControls'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
+import { framePath, framePathLabel } from '../camera/webcodecs'
 import { formatClock, formatRange, formatSetting } from '../format'
 import { useSession } from '../session/context'
 import { useAi } from '../vision/context'
@@ -218,6 +219,10 @@ export function CameraExplorer() {
               <div>
                 <dt>Facing</dt>
                 <dd>{previewOn ? formatSetting(camera.live?.facingMode) : 'Not reporting'}</dd>
+              </div>
+              <div>
+                <dt>Still frames</dt>
+                <dd>{framePathLabel(framePath())}</dd>
               </div>
             </dl>
           </article>
