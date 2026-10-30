@@ -239,6 +239,22 @@ export type PoseTrack = {
 // Two minutes at 30 frames per second.
 export const POSE_TRACK_LIMIT = 3700
 
+// How the camera moved through a video, against the photo the court was marked on. Each h is a
+// row-major 3x3 homography from that photo's pixels to the frame, measured in the photo's pixels.
+export type MotionFrame = { t: number; h: number[]; inliers: number }
+
+export type MotionTrack = {
+  assetId: string
+  // The court photo it was measured against.
+  referenceId: string
+  sourceWidth: number
+  sourceHeight: number
+  sampleFps: number
+  duration: number
+  createdAt: number
+  frames: MotionFrame[]
+}
+
 export type ExerciseKind = 'strength' | 'bodyweight' | 'cardio' | 'timed'
 
 export type Exercise = {
@@ -321,5 +337,6 @@ export type SessionDetail = CaptureSession & {
   courts: CourtCalibration[]
   ballTracks: BallTrack[]
   poseTracks: PoseTrack[]
+  motionTracks: MotionTrack[]
   models: CustomModel[]
 }

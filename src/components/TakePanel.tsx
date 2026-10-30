@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { BallTrack, CourtCalibration } from '../../shared/contracts.ts'
+import type { BallTrack, CourtCalibration, MotionTrack } from '../../shared/contracts.ts'
+import { steadyBallTrack } from '../vision/motion'
 import { courtFor, deviceId as ownDeviceId } from '../session/api'
 import type { MediaAsset } from '../types'
 import { courtFitsTrack } from '../vision/ball'
@@ -40,11 +41,13 @@ export function TakePanel({
   assets,
   courts,
   ballTracks,
+  motionTracks,
 }: {
   takeId: string
   assets: MediaAsset[]
   courts: CourtCalibration[]
   ballTracks: Record<string, BallTrack>
+  motionTracks: Record<string, MotionTrack>
 }) {
   const videos = useMemo(
     () =>
@@ -56,8 +59,10 @@ export function TakePanel({
   const rows = useMemo(
     () =>
       videos.map((video, index) => {
-        const track = ballTracks[video.id]
         const court = courtFor(courts, video.deviceId)
+        const raw = ballTracks[video.id]
+        const motion = motionTracks[video.id]
+        const track = raw && court && motion && motion.referenceId === court.assetId ? steadyBallTrack(raw, motion, court) : raw
         const missing: string[] = []
         if (!track) missing.push('track the ball')
         if (!court) missing.push('mark the court on a frame from this camera')
@@ -65,7 +70,7 @@ export function TakePanel({
         if (video.startedAt == null) missing.push('a recording start time')
         return { video, name: phoneName(video, index), track, court, missing }
       }),
-    [videos, courts, ballTracks],
+    [videos, courts, ballTracks, motionTracks],
   )
   const views: TakeView[] = useMemo(
     () =>

@@ -238,6 +238,10 @@ h1, h2, h3 {
 }
 
 .flight-view { height: 360px; }
+.virtual-view { height: 420px; }
+.check { display: flex; gap: 8px; align-items: center; font-size: 0.9rem; }
+.video-still { overflow: hidden; }
+.ball-frame { will-change: transform; }
 
 .skeleton-view canvas {
   display: block;

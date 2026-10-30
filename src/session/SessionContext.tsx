@@ -5,6 +5,7 @@ import type {
   CourtCalibration,
   CustomModel,
   MediaAssetRecord,
+  MotionTrack,
   PoseTrack,
   SessionDetail,
 } from '../../shared/contracts.ts'
@@ -15,6 +16,9 @@ import {
   clearRemotePoseTrack,
   poseTracksById,
   saveRemotePoseTrack,
+  clearRemoteMotionTrack,
+  motionTracksById,
+  saveRemoteMotionTrack,
   clearRemoteCourt,
   deleteRemoteAsset,
   deleteRemoteModel,
@@ -105,6 +109,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const courtsRef = useRef<CourtCalibration[]>([])
   const [ballTracks, setBallTracksState] = useState<BallTracks>({})
   const [poseTracks, setPoseTracks] = useState<Record<string, PoseTrack>>({})
+  const [motionTracks, setMotionTracks] = useState<Record<string, MotionTrack>>({})
   const [models, setModels] = useState<CustomModel[]>([])
   const [backend, setBackend] = useState<BackendStatus>('offline')
   const assetsRef = useRef(assets)
@@ -227,7 +232,29 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const setMotionTrack = useCallback((assetId: string, track: MotionTrack | null) => {
+    setMotionTracks((current) => {
+      const next = { ...current }
+      if (track) next[assetId] = track
+      else delete next[assetId]
+      return next
+    })
+    if (backendRef.current !== 'online') return
+    const uploaded = uploadsRef.current.get(assetId) ?? Promise.resolve()
+    const request = uploaded.then(() => (track ? saveRemoteMotionTrack(track) : clearRemoteMotionTrack(assetId)))
+    void request.catch((error) => {
+      console.error(error)
+      setStorageWarning('The camera motion was not saved on the server; it lasts only for this visit.')
+    })
+  }, [])
+
   const removeAsset = useCallback((id: string) => {
+    setMotionTracks((current) => {
+      if (!current[id]) return current
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
     setPoseTracks((current) => {
       if (!current[id]) return current
       const next = { ...current }
@@ -436,6 +463,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           publishCourts(serverCourts(latest))
           publishBallTracks(tracks)
           setPoseTracks(poseTracksById(latest.poseTracks))
+          setMotionTracks(motionTracksById(latest.motionTracks))
           setModels(latest.models ?? [])
           setStorageWarning(notice)
         } catch (error) {
@@ -445,6 +473,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           publishCourts(serverCourts(latest))
           setModels(latest.models ?? [])
           setPoseTracks(poseTracksById(latest.poseTracks))
+          setMotionTracks(motionTracksById(latest.motionTracks))
           publishBallTracks({ ...readLocalBallTracks(session.id), ...tracksById(latest.ballTracks) })
           setStorageWarning('Some files saved in this browser have not reached the server yet.')
         }
@@ -496,6 +525,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       courts,
       ballTracks,
       poseTracks,
+      motionTracks,
       models,
       backend,
       addAsset,
@@ -505,6 +535,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       makePrivate,
       setBallTrack,
       setPoseTrack,
+      setMotionTrack,
       addModel,
       editModel,
       removeModel,
@@ -518,6 +549,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       courts,
       ballTracks,
       poseTracks,
+      motionTracks,
       models,
       backend,
       addAsset,
@@ -527,6 +559,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       makePrivate,
       setBallTrack,
       setPoseTrack,
+      setMotionTrack,
       addModel,
       editModel,
       removeModel,

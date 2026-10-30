@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
-import type { CourtCalibration, PoseTrack } from '../../shared/contracts.ts'
+import type { CourtCalibration, MotionTrack, PoseTrack } from '../../shared/contracts.ts'
+import { motionAt, movedCourt } from '../vision/motion'
 import { drawPeople, frameRect } from '../vision/draw'
 import {
   feetOnCourt,
@@ -48,10 +49,12 @@ export function PoseOverlay({
   videoRef,
   track,
   court,
+  motion,
 }: {
   videoRef: RefObject<HTMLVideoElement | null>
   track: PoseTrack
   court: CourtCalibration | null
+  motion: MotionTrack | null
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const units = useUnits()
@@ -81,14 +84,16 @@ export function PoseOverlay({
       context.setTransform(dpr, 0, 0, dpr, 0, 0)
       const now = frameAt(track, video.currentTime)
       if (!now) return
+      const moved = placed && motion ? motionAt(motion, video.currentTime) : null
+      const here = placed && moved ? movedCourt(placed, moved) : placed
       drawPeople(context, now.people, bounds.width / track.sourceWidth, bounds.height / track.sourceHeight, (person) => {
-        const feet = feetOnCourt(person, placed, track.sourceWidth, track.sourceHeight)
+        const feet = feetOnCourt(person, here, track.sourceWidth, track.sourceHeight)
         return `${playerName(person.player)}${feet ? ` · ${xyz(feet, units)}` : ''}`
       })
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
-  }, [videoRef, track, placed, units])
+  }, [videoRef, track, placed, units, motion])
 
   return <canvas ref={canvasRef} className="annotation" aria-hidden="true" />
 }
@@ -100,6 +105,7 @@ export function PlayersPanel({
   url,
   videoRef,
   track,
+  steadyTrack,
   court,
   onSave,
   onClear,
@@ -108,6 +114,8 @@ export function PlayersPanel({
   url: string
   videoRef: RefObject<HTMLVideoElement | null>
   track: PoseTrack | null
+  // The same track with camera motion taken out, for feet positions and distances.
+  steadyTrack?: PoseTrack | null
   court: CourtCalibration | null
   onSave: (track: PoseTrack) => void
   onClear: () => void
@@ -119,14 +127,15 @@ export function PlayersPanel({
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const momentRef = useRef<HTMLUListElement | null>(null)
-  const placed = track ? fits(track, court) : null
-  const summary = useMemo(() => (track ? playerPaths(track, placed).summary : null), [track, placed])
+  const measured = steadyTrack ?? track
+  const placed = measured ? fits(measured, court) : null
+  const summary = useMemo(() => (measured ? playerPaths(measured, placed).summary : null), [measured, placed])
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
   // The players' feet and joint angles at the video's time, written straight to the page every frame.
   useEffect(() => {
-    if (!track) return
+    if (!measured) return
     let frame = 0
     let shown = ''
     const tick = () => {
@@ -134,7 +143,7 @@ export function PlayersPanel({
       const video = videoRef.current
       const node = momentRef.current
       if (!video || !node) return
-      const lines = momentLines(track, placed, video.currentTime, units)
+      const lines = momentLines(measured, placed, video.currentTime, units)
       const text = lines.join('\n')
       if (text === shown) return
       shown = text
@@ -148,7 +157,7 @@ export function PlayersPanel({
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [track, placed, videoRef, units])
+  }, [measured, placed, videoRef, units])
 
   async function run() {
     const controller = new AbortController()

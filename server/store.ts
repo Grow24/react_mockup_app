@@ -10,6 +10,7 @@ import {
   type AiModel,
   type AiSnapshot,
   type BallTrack,
+  type MotionTrack,
   type PoseTrack,
   type CameraRecord,
   type CourtCalibration,
@@ -76,6 +77,11 @@ const schema = `
     track_json TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS pose_tracks (
+    asset_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    track_json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS motion_tracks (
     asset_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     track_json TEXT NOT NULL
@@ -371,11 +377,12 @@ export function getSession(id: string): SessionDetail | undefined {
     courts,
     ballTracks: readTracks<BallTrack>('ball_tracks', id),
     poseTracks: readTracks<PoseTrack>('pose_tracks', id),
+    motionTracks: readTracks<MotionTrack>('motion_tracks', id),
     models: modelsFor(id),
   }
 }
 
-type TrackTable = 'ball_tracks' | 'pose_tracks'
+type TrackTable = 'ball_tracks' | 'pose_tracks' | 'motion_tracks'
 
 function readTracks<T>(table: TrackTable, sessionId: string): T[] {
   const rows = database()
@@ -419,6 +426,10 @@ export function saveBallTrack(assetId: string, track: BallTrack | null) {
 
 export function savePoseTrack(assetId: string, track: PoseTrack | null) {
   return saveTrack('pose_tracks', assetId, track)
+}
+
+export function saveMotionTrack(assetId: string, track: MotionTrack | null) {
+  return saveTrack('motion_tracks', assetId, track)
 }
 
 export function readCourts(sessionId: string): CourtCalibration[] {
@@ -898,6 +909,7 @@ export async function deleteAsset(id: string) {
   database().prepare('DELETE FROM assets WHERE id = ?').run(id)
   database().prepare('DELETE FROM ball_tracks WHERE asset_id = ?').run(id)
   database().prepare('DELETE FROM pose_tracks WHERE asset_id = ?').run(id)
+  database().prepare('DELETE FROM motion_tracks WHERE asset_id = ?').run(id)
   database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), row.session_id)
   await unlink(mediaPath(id)).catch(() => undefined)
   return true

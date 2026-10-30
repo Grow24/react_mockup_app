@@ -43,6 +43,7 @@ import {
   type ModelDetails,
   saveBallTrack,
   savePoseTrack,
+  saveMotionTrack,
   saveCourt,
   saveAsset,
   saveCameras,
@@ -66,6 +67,7 @@ import {
   type BallTrack,
   type PersonPose,
   type PoseTrack,
+  type MotionTrack,
   type CameraRecord,
   type CourtCalibration,
   type CourtPreset,
@@ -359,6 +361,32 @@ function asPoseTrack(value: unknown, assetId: string): PoseTrack | undefined {
   return {
     assetId,
     modelId: track.modelId,
+    sourceWidth: track.sourceWidth,
+    sourceHeight: track.sourceHeight,
+    sampleFps: track.sampleFps,
+    duration: track.duration,
+    createdAt: track.createdAt,
+    frames,
+  }
+}
+
+function asMotionTrack(value: unknown, assetId: string): MotionTrack | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const track = value as Partial<MotionTrack>
+  if (track.assetId !== assetId || typeof track.referenceId !== 'string' || !isUuid(track.referenceId)) return undefined
+  if (!finiteIn(track.sourceWidth, 2, 8000) || !finiteIn(track.sourceHeight, 2, 8000)) return undefined
+  if (!finiteIn(track.sampleFps, 1, 60) || !finiteIn(track.duration, 0, 3600)) return undefined
+  if (!finiteIn(track.createdAt, 0, Number.MAX_SAFE_INTEGER)) return undefined
+  if (!Array.isArray(track.frames) || track.frames.length > POSE_TRACK_LIMIT) return undefined
+  const frames: MotionTrack['frames'] = []
+  for (const item of track.frames) {
+    if (!item || typeof item !== 'object' || !finiteIn(item.t, 0, 3600) || !finiteIn(item.inliers, 0, 100000)) return undefined
+    if (!Array.isArray(item.h) || item.h.length !== 9 || !item.h.every((value) => finiteIn(value, -1e7, 1e7))) return undefined
+    frames.push({ t: item.t, h: item.h.slice(), inliers: item.inliers })
+  }
+  return {
+    assetId,
+    referenceId: track.referenceId,
     sourceWidth: track.sourceWidth,
     sourceHeight: track.sourceHeight,
     sampleFps: track.sampleFps,
@@ -1492,6 +1520,41 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       track = parsed
     }
     const session = savePoseTrack(assetId, track)
+    if (!session) {
+      sendJson(res, 404, { error: 'File was not found.' })
+      return
+    }
+    sendJson(res, 200, session)
+    return
+  }
+
+  if (
+    parts[0] === 'api' &&
+    parts[1] === 'assets' &&
+    parts[3] === 'motion-track' &&
+    parts.length === 4 &&
+    (req.method === 'PUT' || req.method === 'DELETE')
+  ) {
+    const assetId = parts[2]!
+    if (!isUuid(assetId)) {
+      sendJson(res, 400, { error: 'Asset id is not valid.' })
+      return
+    }
+    let track: MotionTrack | null = null
+    if (req.method === 'PUT') {
+      const body = await readBody(req, MAX_BALL_TRACK_JSON)
+      if (!body) {
+        sendJson(res, 413, { error: 'Motion track is too large.' })
+        return
+      }
+      const parsed = asMotionTrack(body, assetId)
+      if (!parsed) {
+        sendJson(res, 400, { error: 'Motion track is not valid.' })
+        return
+      }
+      track = parsed
+    }
+    const session = saveMotionTrack(assetId, track)
     if (!session) {
       sendJson(res, 404, { error: 'File was not found.' })
       return

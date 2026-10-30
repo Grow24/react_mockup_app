@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { COURT_CORNERS } from './global-setup.ts'
 import { enableCamera, markCourt, newSession } from './helpers.ts'
 
-// The fake camera plays e2e/.cache/court.y4m: the court from behind, a ball bouncing at (3.5, 15) m.
+// The fake camera plays e2e/.cache/court-lines.y4m: the court and its lines from behind, a ball bouncing at (3.5, 15) m.
 async function courtFromCamera(page: Page) {
   await enableCamera(page)
   await page.waitForTimeout(600)
@@ -130,4 +130,108 @@ test('tracks players through a recorded video and keeps the track on the server'
   await expect
     .poll(async () => ((await (await page.request.get(`/api/sessions/${session.id}`)).json()) as { poseTracks: unknown[] }).poseTracks.length)
     .toBe(1)
+})
+
+test('shows the rally from a virtual camera 10 feet behind the baseline and 15 feet up', async ({ page }) => {
+  const session = await newSession(page)
+  await page.goto(`/?session=${session.id}`)
+  await enableCamera(page)
+  await page.getByRole('button', { name: 'Start recording' }).click()
+  await page.waitForTimeout(3300)
+  await page.getByRole('button', { name: 'Stop recording' }).click()
+  await expect(page.getByText(/Video saved/)).toBeVisible()
+  await page.waitForTimeout(1500)
+  await page.getByRole('button', { name: 'Capture photo' }).click()
+  await page.getByRole('link', { name: /Results/ }).click()
+  await page.locator('.asset-list button', { hasText: 'Photo' }).first().click()
+  await markCourt(page, COURT_CORNERS)
+  await page.locator('.asset-list button', { hasText: 'Video' }).first().click()
+  const ball = page.locator('[aria-label="Ball tracking"]')
+  await ball.getByRole('button', { name: 'Track the ball' }).click()
+  await expect(ball.getByRole('button', { name: 'Track again' })).toBeVisible({ timeout: 150_000 })
+
+  const virtual = page.locator('[aria-label="Virtual camera"]')
+  await virtual.getByLabel('Where to watch from').fill('10 feet behind the baseline, 15 feet above, right side')
+  await virtual.getByRole('button', { name: 'Show this view' }).click()
+  await page.getByLabel('Units').selectOption('ft')
+  await expect(virtual.getByRole('status')).toContainText('10.0 ft behind the near baseline, 15.0 ft high, on the right side')
+  await expect(virtual.getByRole('status')).toContainText('x 36.0 · y -10.0 · z 15.0 ft')
+  // Scrub to the bounce so the ball shows.
+  await page.locator('video').evaluate((video: HTMLVideoElement) => (video.currentTime = 1.2))
+  await expect(virtual.getByText(/^Ball: x/)).toBeVisible({ timeout: 30_000 })
+  await page.waitForTimeout(800)
+  await virtual.locator('.virtual-view').screenshot({ path: 'test-results/virtual-camera.png' })
+})
+
+test('measures camera motion against the court photo and holds the video steady', async ({ page }) => {
+  const session = await newSession(page)
+  await page.goto(`/?session=${session.id}`)
+  await courtFromCamera(page)
+  await page.getByRole('link', { name: 'Camera', exact: true }).click()
+  await enableCamera(page)
+  await page.getByRole('button', { name: 'Start recording' }).click()
+  await page.waitForTimeout(2200)
+  await page.getByRole('button', { name: 'Stop recording' }).click()
+  await expect(page.getByText(/Video saved/)).toBeVisible()
+  await page.getByRole('link', { name: /Results/ }).click()
+  await page.locator('.asset-list button', { hasText: 'Video' }).first().click()
+  const panel = page.locator('[aria-label="Camera motion"]')
+  await panel.getByRole('button', { name: 'Measure camera motion' }).click()
+  const summary = panel.getByText(/^The view moved up to \d+ px and turned up to [\d.]+° · matched in \d+ of \d+ frames/)
+  await expect(summary).toBeVisible({ timeout: 120_000 })
+  const [, shift] = (await summary.innerText()).match(/moved up to (\d+) px/)!
+  // The fake camera never moves, and its flat drawing has too few distinct corners to match, so
+  // the motion has to stay put rather than jump to a wrong match.
+  expect(Number(shift)).toBeLessThan(4)
+  await panel.getByLabel('Hold the video steady').check()
+  await expect(page.locator('.ball-frame')).toHaveAttribute('style', /matrix3d/)
+  await expect
+    .poll(async () => ((await (await page.request.get(`/api/sessions/${session.id}`)).json()) as { motionTracks: unknown[] }).motionTracks.length)
+    .toBe(1)
+})
+
+test('finds the court in a photo by itself', async ({ page }) => {
+  const session = await newSession(page)
+  await page.goto(`/?session=${session.id}`)
+  await enableCamera(page)
+  await page.waitForTimeout(600)
+  await page.getByRole('button', { name: 'Capture photo' }).click()
+  await expect(page.getByText(/Photo saved/)).toBeVisible()
+  await page.getByRole('link', { name: /Results/ }).click()
+  await page.locator('.asset-list button', { hasText: 'Photo' }).first().click()
+  await page.waitForFunction(() => (document.querySelector('.court-photo img') as HTMLImageElement | null)?.naturalWidth)
+  await page.getByRole('button', { name: 'Find the court automatically' }).click()
+  await expect(page.getByText(/^Court found: \d+% of its lines/)).toBeVisible({ timeout: 60_000 })
+  await expect(page.locator('.court-flat')).toBeVisible()
+  await expect
+    .poll(async () => ((await (await page.request.get(`/api/sessions/${session.id}`)).json()) as { courts: unknown[] }).courts.length)
+    .toBe(1)
+  const saved = ((await (await page.request.get(`/api/sessions/${session.id}`)).json()) as { courts: { imagePoints: { x: number; y: number }[]; landmarks?: string[] }[] }).courts[0]!
+  expect(saved.landmarks ?? ['doubles-near-left']).toContain('doubles-near-left')
+  saved.imagePoints.forEach((point, index) => {
+    expect(Math.hypot(point.x - COURT_CORNERS[index]!.x, point.y - COURT_CORNERS[index]!.y)).toBeLessThan(4)
+  })
+  await page.locator('.court-photo').screenshot({ path: 'test-results/court-found.png' })
+})
+
+test('looks for a fence in a recorded video and offers the cleaned view', async ({ page }) => {
+  const session = await newSession(page)
+  await page.goto(`/?session=${session.id}`)
+  await enableCamera(page)
+  await page.getByRole('button', { name: 'Start recording' }).click()
+  await page.waitForTimeout(2200)
+  await page.getByRole('button', { name: 'Stop recording' }).click()
+  await expect(page.getByText(/Video saved/)).toBeVisible()
+  await page.getByRole('link', { name: /Results/ }).click()
+  await page.locator('.asset-list button', { hasText: 'Video' }).first().click()
+  const panel = page.locator('[aria-label="Fence"]')
+  await panel.getByRole('button', { name: 'Find the fence' }).click()
+  // The fake court has white lines but no fence, so almost nothing is taken for wire.
+  const found = panel.getByText(/No fence was found|The fence covers about \d+%/)
+  await expect(found).toBeVisible({ timeout: 60_000 })
+  const share = Number((await found.innerText()).match(/(\d+)%/)?.[1] ?? 0)
+  expect(share).toBeLessThan(5)
+  await panel.getByLabel('Show').selectOption('mask')
+  await panel.getByLabel('Show').selectOption('clean')
+  await expect(page.locator('.ball-frame canvas').first()).toBeVisible()
 })

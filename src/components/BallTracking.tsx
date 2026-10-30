@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import type { BallPoint, BallTrack, CourtCalibration, CourtPoint } from '../../shared/contracts.ts'
+import type { BallPoint, BallTrack, CourtCalibration, CourtPoint, MotionTrack } from '../../shared/contracts.ts'
 import { courtArea, courtLines } from '../../shared/court.ts'
 import { BallFlight } from './BallFlight'
 import { BallModelSelect } from './BallModelSelect'
@@ -7,7 +7,7 @@ import { useBallModel } from '../vision/useBallModel'
 import { courtFitsTrack, groundPoints, pointAt, trailAt } from '../vision/ball'
 import { BALL_FPS_CHOICES, BALL_SAMPLE_FPS, trackBall } from '../vision/ballTracker'
 import { courtMeters, courtPixelSize, mapPixel } from '../vision/court'
-import { drawCourtOverlay } from '../vision/courtOverlay'
+import { applyHomography, motionAt, type Homography } from '../vision/motion'
 import { flightAt, lineCall, positionAt, projectPoint, type FlightFit } from '../vision/flight'
 import { sharedFlightFit } from '../vision/flightFit'
 import { frameRect } from '../vision/draw'
@@ -28,14 +28,20 @@ function readFps() {
 const GAP_SECONDS = 0.4
 const MAP_PAD = 16
 
+// track is what the camera saw, for the trail; steadyTrack is the same ball with any camera motion
+// taken out, for the 3D fit, which is then drawn back into the moving frame.
 export function BallOverlay({
   videoRef,
   track,
+  steadyTrack,
   court,
+  motion,
 }: {
   videoRef: RefObject<HTMLVideoElement | null>
   track: BallTrack
+  steadyTrack: BallTrack
   court: CourtCalibration | null
+  motion: MotionTrack | null
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const units = useUnits()
@@ -45,7 +51,7 @@ export function BallOverlay({
   useEffect(() => {
     if (!usable) return
     let current = true
-    sharedFlightFit(track, usable)
+    sharedFlightFit(steadyTrack, usable)
       .then((next) => {
         if (current) setFit({ court: usable, fit: next })
       })
@@ -53,7 +59,7 @@ export function BallOverlay({
     return () => {
       current = false
     }
-  }, [track, usable])
+  }, [steadyTrack, usable])
 
   useEffect(() => {
     let frame = 0
@@ -80,7 +86,6 @@ export function BallOverlay({
       context.setTransform(dpr, 0, 0, dpr, 0, 0)
       const sx = bounds.width / track.sourceWidth
       const sy = bounds.height / track.sourceHeight
-      if (usable) drawCourtOverlay(context, usable, bounds.width / usable.sourceWidth, bounds.height / usable.sourceHeight)
       const trail = trailAt(track.points, video.currentTime)
       context.lineWidth = 3
       context.lineCap = 'round'
@@ -108,11 +113,14 @@ export function BallOverlay({
         context.arc(current.x * sx, current.y * sy, Math.max(7, current.radius * sx + 4), 0, Math.PI * 2)
         context.stroke()
       }
-      if (usable && fitted) drawHeight(context, usable, fitted, video.currentTime, bounds.width, bounds.height, units)
+      if (usable && fitted) {
+        const moved = motion ? motionAt(motion, video.currentTime) : null
+        drawHeight(context, usable, fitted, video.currentTime, bounds.width, bounds.height, units, moved)
+      }
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
-  }, [videoRef, track, usable, fit, units])
+  }, [videoRef, track, usable, fit, units, motion])
 
   return <canvas ref={canvasRef} className="annotation" aria-hidden="true" />
 }
@@ -126,12 +134,14 @@ function drawHeight(
   width: number,
   height: number,
   units: Units,
+  moved: Homography | null,
 ) {
   const flight = flightAt(fit, t)
   if (!flight) return
   const p = positionAt(flight, Math.min(flight.to, Math.max(flight.from, t)))
-  const ball = projectPoint(fit.camera, p)
-  const shadow = projectPoint(fit.camera, { x: p.x, y: p.y, z: 0 })
+  const inFrame = (point: { x: number; y: number } | null) => (point && moved ? applyHomography(moved, point) : point)
+  const ball = inFrame(projectPoint(fit.camera, p))
+  const shadow = inFrame(projectPoint(fit.camera, { x: p.x, y: p.y, z: 0 }))
   if (!ball || !shadow) return
   const kx = width / court.sourceWidth
   const ky = height / court.sourceHeight
@@ -302,6 +312,7 @@ export function BallPanel({
   url,
   videoRef,
   track,
+  steadyTrack,
   court,
   onSave,
   onClear,
@@ -310,6 +321,8 @@ export function BallPanel({
   url: string
   videoRef: RefObject<HTMLVideoElement | null>
   track: BallTrack | null
+  // The same track with camera motion taken out, used for the court map and the 3D flight.
+  steadyTrack?: BallTrack | null
   court: CourtCalibration | null
   onSave: (track: BallTrack) => void
   onClear: () => void
@@ -483,8 +496,8 @@ export function BallPanel({
             </p>
           ) : (
             <>
-              <BallCourtMap track={track} court={court} />
-              <BallFlight track={track} court={court} videoRef={videoRef} />
+              <BallCourtMap track={steadyTrack ?? track} court={court} />
+              <BallFlight track={steadyTrack ?? track} court={court} videoRef={videoRef} />
             </>
           )}
         </>

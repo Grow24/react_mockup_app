@@ -1,6 +1,7 @@
 import { closeSync, existsSync, mkdirSync, openSync, writeFileSync, writeSync } from 'node:fs'
-import { projectPoint } from '../src/vision/flight.ts'
-import { behind, L, truth, W } from '../tests/helpers/scene.ts'
+import { courtLines } from '../shared/court.ts'
+import { groundFromImage, projectPoint } from '../src/vision/flight.ts'
+import { behind, courtFor, L, truth, W } from '../tests/helpers/scene.ts'
 
 const WIDTH = 640
 const HEIGHT = 360
@@ -16,8 +17,38 @@ export const COURT_CORNERS = [
   [0, L],
 ].map(([x, y]) => projectPoint(behind, { x: x!, y: y!, z: 0 })!)
 
-// Chrome's fake camera plays this clip: the court from behind, and a ball that bounces at (3.5, 15) m.
+// Painted lines are about 5 cm wide each side of their center.
+const LINE_HALF_WIDTH = 0.05
+
+function onLine(x: number, y: number) {
+  return courtLines('tennis-doubles').some((line) => {
+    if (line.dashed) return false
+    const dx = line.to.x - line.from.x
+    const dy = line.to.y - line.from.y
+    const k = Math.max(0, Math.min(1, ((x - line.from.x) * dx + (y - line.from.y) * dy) / (dx * dx + dy * dy)))
+    return Math.hypot(x - (line.from.x + k * dx), y - (line.from.y + k * dy)) <= LINE_HALF_WIDTH
+  })
+}
+
+// Chrome's fake camera plays this clip: the court and its white lines from behind, and a ball that bounces at (3.5, 15) m.
+export const COURT_CLIP = 'e2e/.cache/court-lines.y4m'
+
 function writeCourtClip(path: string) {
+  const toCourt = groundFromImage(courtFor(behind, WIDTH, HEIGHT))!
+  // A pixel is white when most of it is covered by a line.
+  const painted = (px: number, py: number) => {
+    let hits = 0
+    for (const [ox, oy] of [
+      [0.25, 0.25],
+      [0.75, 0.25],
+      [0.25, 0.75],
+      [0.75, 0.75],
+    ]) {
+      const spot = toCourt({ x: px + ox!, y: py + oy! })
+      if (spot && onLine(spot.x, spot.y)) hits += 1
+    }
+    return hits / 4
+  }
   const inside = (px: number, py: number) => {
     let hit = false
     for (let i = 0, j = COURT_CORNERS.length - 1; i < COURT_CORNERS.length; j = i++) {
@@ -29,7 +60,11 @@ function writeCourtClip(path: string) {
   }
   const background = new Uint8Array(WIDTH * HEIGHT * 3)
   for (let y = 0; y < HEIGHT; y += 1) {
-    for (let x = 0; x < WIDTH; x += 1) background.set(inside(x + 0.5, y + 0.5) ? [47, 122, 79] : [58, 63, 70], (y * WIDTH + x) * 3)
+    for (let x = 0; x < WIDTH; x += 1) {
+      const base = inside(x + 0.5, y + 0.5) ? [47, 122, 79] : [58, 63, 70]
+      const white = painted(x, y)
+      background.set(base.map((value) => Math.round(value + (238 - value) * white)), (y * WIDTH + x) * 3)
+    }
   }
   const file = openSync(path, 'w')
   writeSync(file, `YUV4MPEG2 W${WIDTH} H${HEIGHT} F${FPS}:1 Ip A1:1 C420jpeg\n`)
@@ -69,7 +104,7 @@ const PEOPLE_PHOTO = 'https://raw.githubusercontent.com/ultralytics/ultralytics/
 
 export default async function globalSetup() {
   mkdirSync('e2e/.cache', { recursive: true })
-  if (!existsSync('e2e/.cache/court.y4m')) writeCourtClip('e2e/.cache/court.y4m')
+  if (!existsSync(COURT_CLIP)) writeCourtClip(COURT_CLIP)
   if (!existsSync('e2e/.cache/bus.jpg')) {
     const response = await fetch(PEOPLE_PHOTO)
     if (!response.ok) throw new Error(`The people photo could not be downloaded: ${response.status}`)

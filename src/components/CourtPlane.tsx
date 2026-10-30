@@ -17,6 +17,7 @@ import { cameraText, levelCamera, levelSpread } from '../vision/cameraPose'
 import { frameRect } from '../vision/draw'
 import { cameraFromCourt, projectPoint } from '../vision/flight'
 import { renderCourt } from '../vision/opencv'
+import { detectCourt } from '../vision/courtDetect'
 import { length, useUnits } from '../units'
 
 const ANKLES = [
@@ -134,6 +135,8 @@ export function CourtPlane({
   const [lines, setLines] = useState<{ label: string; fromLeft: number; fromNear: number }[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [finding, setFinding] = useState(false)
+  const [found, setFound] = useState<string | null>(null)
 
   useEffect(() => {
     const node = imageRef.current
@@ -207,6 +210,36 @@ export function CourtPlane({
     const next = [...points, { x: (x / bounds.width) * sourceWidth, y: (y / bounds.height) * sourceHeight }]
     setPoints(next)
     if (next.length === landmarks.length) publish(next)
+  }
+
+  async function findCourt() {
+    if (!image) return
+    setFinding(true)
+    setFound(null)
+    try {
+      const detected = await detectCourt(image, sourceWidth, sourceHeight)
+      if (!detected) {
+        setFound('No tennis court was found in this photo. Click the court points instead.')
+        return
+      }
+      setLandmarks(detected.landmarks)
+      setPoints(detected.imagePoints)
+      const done = complete(preset, detected.landmarks, detected.imagePoints, sourceWidth, sourceHeight)
+      if (done && !('error' in done)) {
+        const court: CourtCalibration = { preset, assetId, sourceWidth, sourceHeight, imagePoints: done.imagePoints, callArea }
+        if (done.landmarks.join() !== defaultLandmarks(preset).join()) court.landmarks = done.landmarks
+        if (deviceId) court.deviceId = deviceId
+        onSave(court)
+      }
+      setFound(
+        `Court found: ${Math.round(detected.hitRate * 100)}% of its lines sit on painted lines. Check that the drawn lines match the court; Clear court to mark it by hand.`,
+      )
+    } catch (caught) {
+      console.error(caught)
+      setFound(caught instanceof Error ? caught.message : 'The court could not be found.')
+    } finally {
+      setFinding(false)
+    }
   }
 
   function clearCourt() {
@@ -354,10 +387,20 @@ export function CourtPlane({
         <button type="button" className="secondary" onClick={clearCourt}>
           Clear court
         </button>
+        {preset === 'tennis-doubles' ? (
+          <button type="button" className="primary" disabled={!image || finding} onClick={() => void findCourt()}>
+            {finding ? 'Looking for the court…' : 'Find the court automatically'}
+          </button>
+        ) : null}
       </div>
       {error ? (
         <p className="warn" role="alert">
           {error}
+        </p>
+      ) : null}
+      {found ? (
+        <p className="note" role="status">
+          {found}
         </p>
       ) : null}
       {completed && 'error' in completed ? (

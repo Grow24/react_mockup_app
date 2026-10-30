@@ -1,16 +1,21 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { jpegFromVideo } from '../camera/webcodecs'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import { BallOverlay, BallPanel } from '../components/BallTracking'
 import { CourtPlane } from '../components/CourtPlane'
+import { MotionPanel, SteadyFrame, VideoCourtOverlay } from '../components/MotionPanel'
+import { FenceCanvas, FencePanel } from '../components/FencePanel'
+import type { FenceRemover } from '../vision/fence'
 import { PlayersPanel, PoseOverlay } from '../components/PlayersPanel'
+import { VirtualView } from '../components/VirtualView'
 import { SkeletonView } from '../components/SkeletonView'
 import { TakePanel } from '../components/TakePanel'
 import { formatPercent, formatPerformance, formatWhen } from '../format'
 import { courtFor, courtKeyOf } from '../session/api'
 import { useSession } from '../session/context'
 import type { AiSnapshot } from '../types'
+import { steadyBallTrack, steadyPoseTrack } from '../vision/motion'
 
 function poseReady(snapshot: AiSnapshot | undefined) {
   return (snapshot?.pose.filter((point) => point.visibility >= 0.5).length ?? 0) >= 4
@@ -29,11 +34,13 @@ export function Results() {
     courts,
     ballTracks,
     poseTracks,
+    motionTracks,
     addAsset,
     removeAsset,
     setCourt,
     setBallTrack,
     setPoseTrack,
+    setMotionTrack,
   } = useSession()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [frameReady, setFrameReady] = useState(false)
@@ -42,10 +49,28 @@ export function Results() {
   const photoRef = useRef<HTMLImageElement | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const poseFrameRef = useRef<HTMLDivElement | null>(null)
+  const ballFrameRef = useRef<HTMLDivElement | null>(null)
+  const [steadyView, setSteadyView] = useState(false)
+  const [fence, setFence] = useState<{ assetId: string; remover: FenceRemover } | null>(null)
+  const [fenceMode, setFenceMode] = useState<'off' | 'clean' | 'mask'>('clean')
   const selected = assets.find((asset) => asset.id === selectedId) ?? assets[0]
   const ballTrack = selected?.kind === 'video' ? (ballTracks[selected.id] ?? null) : null
   const poseTrack = selected?.kind === 'video' ? (poseTracks[selected.id] ?? null) : null
   const court = selected ? courtFor(courts, selected.deviceId) : null
+  const savedMotion = selected?.kind === 'video' ? (motionTracks[selected.id] ?? null) : null
+  // Motion measured against an older court photo no longer lines up with the court.
+  const motion = savedMotion && court && savedMotion.referenceId === court.assetId ? savedMotion : null
+  const steadyBall = useMemo(() => (ballTrack && motion && court ? steadyBallTrack(ballTrack, motion, court) : ballTrack), [ballTrack, motion, court])
+  const steadyPose = useMemo(() => (poseTrack && motion && court ? steadyPoseTrack(poseTrack, motion, court) : poseTrack), [poseTrack, motion, court])
+  const courtFitsVideo =
+    !!court &&
+    !!selected?.width &&
+    !!selected.height &&
+    Math.abs(court.sourceWidth / court.sourceHeight - selected.width / selected.height) / (selected.width / selected.height) <= 0.02
+  const referenceUrl = court ? (assets.find((asset) => asset.id === court.assetId)?.url ?? null) : null
+  const remover = fence && fence.assetId === selected?.id ? fence.remover : null
+
+  useEffect(() => () => fence?.remover.dispose(), [fence])
 
   useEffect(() => {
     setFrameReady(false)
@@ -160,7 +185,7 @@ export function Results() {
                 </div>
               ) : (
                 <div className="video-still">
-                  <div className="ball-frame">
+                  <div className="ball-frame" ref={ballFrameRef}>
                     <video
                       key={selected.id}
                       ref={videoRef}
@@ -169,8 +194,15 @@ export function Results() {
                       playsInline
                       onLoadedData={() => setFrameReady(true)}
                     />
-                    {poseTrack ? <PoseOverlay videoRef={videoRef} track={poseTrack} court={court} /> : null}
-                    {ballTrack ? <BallOverlay videoRef={videoRef} track={ballTrack} court={court} /> : null}
+                    {remover && fenceMode !== 'off' ? <FenceCanvas videoRef={videoRef} remover={remover} mode={fenceMode} /> : null}
+                    {court && courtFitsVideo ? <VideoCourtOverlay videoRef={videoRef} court={court} motion={motion} /> : null}
+                    {poseTrack ? <PoseOverlay videoRef={videoRef} track={poseTrack} court={court} motion={motion} /> : null}
+                    {ballTrack && steadyBall ? (
+                      <BallOverlay videoRef={videoRef} track={ballTrack} steadyTrack={steadyBall} court={court} motion={motion} />
+                    ) : null}
+                    {steadyView && motion && court ? (
+                      <SteadyFrame frameRef={ballFrameRef} videoRef={videoRef} court={court} motion={motion} />
+                    ) : null}
                   </div>
                   <button
                     type="button"
@@ -194,7 +226,35 @@ export function Results() {
             </figure>
 
             {selected.kind === 'video' && selected.takeId ? (
-              <TakePanel takeId={selected.takeId} assets={assets} courts={courts} ballTracks={ballTracks} />
+              <TakePanel takeId={selected.takeId} assets={assets} courts={courts} ballTracks={ballTracks} motionTracks={motionTracks} />
+            ) : null}
+
+            {selected.kind === 'video' ? (
+              <MotionPanel
+                key={`motion-${selected.id}`}
+                assetId={selected.id}
+                url={selected.url}
+                referenceUrl={courtFitsVideo ? referenceUrl : null}
+                court={courtFitsVideo ? court : null}
+                motion={savedMotion}
+                steady={steadyView}
+                onSteady={setSteadyView}
+                onSave={(track) => setMotionTrack(selected.id, track)}
+                onClear={() => setMotionTrack(selected.id, null)}
+              />
+            ) : null}
+
+            {selected.kind === 'video' && selected.width && selected.height ? (
+              <FencePanel
+                key={`fence-${selected.id}`}
+                url={selected.url}
+                width={selected.width}
+                height={selected.height}
+                remover={remover}
+                mode={fenceMode}
+                onRemover={(next) => setFence(next ? { assetId: selected.id, remover: next } : null)}
+                onMode={setFenceMode}
+              />
             ) : null}
 
             {selected.kind === 'video' ? (
@@ -204,6 +264,7 @@ export function Results() {
                 url={selected.url}
                 videoRef={videoRef}
                 track={ballTrack}
+                steadyTrack={steadyBall}
                 court={court}
                 onSave={(track) => setBallTrack(selected.id, track)}
                 onClear={() => setBallTrack(selected.id, null)}
@@ -217,9 +278,21 @@ export function Results() {
                 url={selected.url}
                 videoRef={videoRef}
                 track={poseTrack}
+                steadyTrack={steadyPose}
                 court={court}
                 onSave={(track) => setPoseTrack(selected.id, track)}
                 onClear={() => setPoseTrack(selected.id, null)}
+              />
+            ) : null}
+
+            {selected.kind === 'video' && court && courtFitsVideo ? (
+              <VirtualView
+                key={`virtual-${selected.id}`}
+                videoRef={videoRef}
+                court={court}
+                ballTrack={steadyBall}
+                poseTrack={steadyPose}
+                motion={motion}
               />
             ) : null}
 

@@ -27,7 +27,7 @@ export default defineConfig({
       args: [
         '--use-fake-device-for-media-stream',
         '--use-fake-ui-for-media-stream',
-        '--use-file-for-fake-video-capture=e2e/.cache/court.y4m',
+        '--use-file-for-fake-video-capture=e2e/.cache/court-lines.y4m',
         '--enable-unsafe-swiftshader',
         '--use-angle=swiftshader',
       ],
