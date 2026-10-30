@@ -307,6 +307,12 @@ export function BallPanel({
             {bounces.length === 1 ? '1 bounce' : `${bounces.length} bounces`}. Play the video to see the
             trail.
           </p>
+          {track.live ? (
+            <p className="muted">
+              Tracked live at about {track.sampleFps} checks per second while recording. Track again to read{' '}
+              {BALL_SAMPLE_FPS} frames per second.
+            </p>
+          ) : null}
           {bounces.length > 0 ? (
             <div className="controls">
               {bounces.map((point, index) => (

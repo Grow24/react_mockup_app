@@ -161,6 +161,7 @@ export type BallTrack = {
   duration: number
   createdAt: number
   points: BallPoint[]
+  live?: boolean
 }
 
 export const BALL_TRACK_LIMIT = 5000

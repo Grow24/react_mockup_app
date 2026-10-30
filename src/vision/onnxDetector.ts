@@ -1,7 +1,9 @@
 import type { Detection } from '../types'
 import type { DecodeOptions } from './yolo'
 
-type Ready = { type: 'ready' }
+export type OnnxBackend = { name: 'webgpu' | 'wasm'; threads: number }
+
+type Ready = { type: 'ready'; backend: OnnxBackend }
 type Failed = { type: 'error'; message: string }
 type Result = {
   type: 'result'
@@ -17,6 +19,7 @@ let readyResolve: (() => void) | null = null
 let readyReject: ((error: Error) => void) | null = null
 let nextId = 0
 let busy = false
+let backend: OnnxBackend | null = null
 const waiters = new Map<number, { resolve: (value: { detections: Detection[]; inferenceMs: number }) => void; reject: (error: Error) => void }>()
 
 function ensureWorker() {
@@ -25,6 +28,7 @@ function ensureWorker() {
   worker.onmessage = (event: MessageEvent<Ready | Failed | Result>) => {
     const message = event.data
     if (message.type === 'ready') {
+      backend = message.backend
       readyResolve?.()
       return
     }
@@ -55,6 +59,10 @@ export function prepareOnnx() {
     })
   }
   return loading
+}
+
+export function onnxBackend() {
+  return backend
 }
 
 export function resetOnnx() {

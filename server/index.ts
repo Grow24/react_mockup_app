@@ -227,6 +227,7 @@ function asBallTrack(value: unknown, assetId: string): BallTrack | undefined {
     duration: track.duration,
     createdAt: track.createdAt,
     points,
+    ...(track.live === true ? { live: true } : {}),
   }
 }
 
@@ -650,6 +651,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 const fileTypes: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
@@ -681,6 +683,9 @@ async function serveApp(req: IncomingMessage, res: ServerResponse, urlPath: stri
   res.writeHead(200, {
     'Content-Type': fileTypes[path.extname(file)] ?? 'application/octet-stream',
     'Cache-Control': file.endsWith(`${path.sep}index.html`) ? 'no-store' : 'public, max-age=3600',
+    // Cross-origin isolation lets the ONNX worker use threads; credentialless keeps CDN files loading.
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'credentialless',
   })
   if (req.method === 'HEAD') {
     res.end()

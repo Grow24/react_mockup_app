@@ -330,6 +330,18 @@ select {
 .facts dd { margin: 0; text-align: right; }
 
 .note { color: #0f6a64; }
+
+.line-call-box { display: grid; gap: 4px; margin-top: 10px; }
+.line-call {
+  justify-self: start;
+  font-size: 1.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 14px;
+  border-radius: 10px;
+}
+.call-in { background: #dff4f1; color: #0f6a64; }
+.call-out { background: #f8e1da; color: #9d2c2c; }
 .warn { color: #9d2c2c; }
 
 input[type='range'] {

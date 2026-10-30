@@ -101,9 +101,12 @@ function preferredMime() {
 
 export type TakeRecording = { id: string; stopAt: number }
 
+export type RecordedVideo = { assetId: string; fromMs: number; toMs: number }
+
 export function useCamera(
   previewRef: RefObject<HTMLVideoElement | null>,
   readSnapshot: () => AiSnapshot | null,
+  onRecorded?: (video: RecordedVideo) => void,
 ) {
   const { addAsset } = useSession()
   const streamRef = useRef<MediaStream | null>(null)
@@ -115,6 +118,12 @@ export function useCamera(
   const takeRef = useRef<TakeRecording | null>(null)
   const startedAtRef = useRef<number | null>(null)
   const stopTimerRef = useRef<number | null>(null)
+  const perfRef = useRef({ from: 0, to: 0 })
+  const onRecordedRef = useRef(onRecorded)
+
+  useEffect(() => {
+    onRecordedRef.current = onRecorded
+  })
 
   const [status, setStatus] = useState<CameraStatus>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -150,7 +159,7 @@ export function useCamera(
     const info = liveRef.current
     const take = takeRef.current
     takeRef.current = null
-    addAsset({
+    const assetId = addAsset({
       kind: 'video',
       blob,
       mimeType,
@@ -161,6 +170,7 @@ export function useCamera(
       takeId: take?.id,
       startedAt: startedAtRef.current ?? undefined,
     })
+    onRecordedRef.current?.({ assetId, fromMs: perfRef.current.from, toMs: perfRef.current.to })
     if (mountedRef.current) {
       setCaptureMessage(
         take
@@ -266,6 +276,7 @@ export function useCamera(
     takeRef.current = take ?? null
     startedAtRef.current = null
     recorder.onstart = () => {
+      perfRef.current = { from: performance.now(), to: performance.now() }
       startedAtRef.current = serverNow()
       if (!take) return
       stopTimerRef.current = window.setTimeout(
@@ -279,6 +290,7 @@ export function useCamera(
       if (event.data.size > 0) chunksRef.current.push(event.data)
     }
     recorder.onstop = () => {
+      perfRef.current = { ...perfRef.current, to: performance.now() }
       if (stopTimerRef.current != null) window.clearTimeout(stopTimerRef.current)
       stopTimerRef.current = null
       finalizeRecording(recorder)

@@ -88,6 +88,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [backend, setBackend] = useState<BackendStatus>('offline')
   const assetsRef = useRef(assets)
   const ballTracksRef = useRef<BallTracks>({})
+  const uploadsRef = useRef(new Map<string, Promise<void>>())
   const sessionRef = useRef<string | null>(null)
   const camerasRef = useRef('')
   const backendRef = useRef<BackendStatus>('offline')
@@ -140,8 +141,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         ...captureFields({ ...input, deviceId: input.deviceId ?? ownDeviceId() }),
       }
       setAssets((current) => [asset, ...current])
-      void rememberAsset(asset, input.blob)
-        .then(() => publishRemote(asset, input.blob))
+      const upload = rememberAsset(asset, input.blob).then(() => publishRemote(asset, input.blob))
+      uploadsRef.current.set(
+        asset.id,
+        upload.catch(() => undefined).finally(() => uploadsRef.current.delete(asset.id)),
+      )
+      void upload
         .then(() => setStorageWarning(null))
         .catch((error) => {
           console.error(error)
@@ -170,7 +175,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       else delete next[assetId]
       publishBallTracks(next)
       if (backendRef.current !== 'online') return
-      const request = track ? saveRemoteBallTrack(track) : clearRemoteBallTrack(assetId)
+      // A track saved right after a recording has to wait for that video to reach the server.
+      const uploaded = uploadsRef.current.get(assetId) ?? Promise.resolve()
+      const request = uploaded.then(() => (track ? saveRemoteBallTrack(track) : clearRemoteBallTrack(assetId)))
       void request.catch((error) => {
         console.error(error)
         setStorageWarning('The ball track stays in this browser. The server did not keep it.')

@@ -79,6 +79,39 @@ export function courtHomography(court: CourtCalibration): number[] | null {
   return h ? [...h, 1] : null
 }
 
+// Maps a point on the ground in the court photo's pixels back to court meters.
+export function groundFromImage(court: CourtCalibration) {
+  const h = courtHomography(court)
+  if (!h) return null
+  const [a, b, c, d, e, f, g, k, i] = h as [number, number, number, number, number, number, number, number, number]
+  const inverse = [
+    e * i - f * k,
+    c * k - b * i,
+    b * f - c * e,
+    f * g - d * i,
+    a * i - c * g,
+    c * d - a * f,
+    d * k - e * g,
+    b * g - a * k,
+    a * e - b * d,
+  ]
+  return (point: { x: number; y: number }) => {
+    const w = inverse[6]! * point.x + inverse[7]! * point.y + inverse[8]!
+    if (Math.abs(w) < 1e-12) return null
+    return {
+      x: (inverse[0]! * point.x + inverse[1]! * point.y + inverse[2]!) / w,
+      y: (inverse[3]! * point.x + inverse[4]! * point.y + inverse[5]!) / w,
+    }
+  }
+}
+
+// Lines are part of the court, so a ball touching the line is in.
+export function lineCall(preset: CourtPreset, spot: { x: number; y: number }, radius = BALL_RADIUS[preset]): 'in' | 'out' {
+  const { widthMeters, lengthMeters } = COURT_PRESETS[preset]
+  const inside = spot.x >= -radius && spot.y >= -radius && spot.x <= widthMeters + radius && spot.y <= lengthMeters + radius
+  return inside ? 'in' : 'out'
+}
+
 export type CourtCamera = {
   focal: number
   cx: number

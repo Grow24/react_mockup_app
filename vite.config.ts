@@ -51,6 +51,10 @@ export default defineConfig({
     exclude: ['onnxruntime-web'],
   },
   server: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'credentialless',
+    },
     proxy: {
       '/api': 'http://127.0.0.1:8787',
     },
