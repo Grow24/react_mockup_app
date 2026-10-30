@@ -37,6 +37,10 @@ test('tracks the ball in a recorded video and places the bounce in 3D', async ({
   const [, x, y] = (await bounce.innerText()).match(/: IN · ([\d.]+) m from the left line, ([\d.]+) m from the near line/)!
   expect(Math.hypot(Number(x) - 3.5, Number(y) - 15)).toBeLessThan(1)
   await expect(panel.getByText(/^Rapier:/)).toBeVisible()
+  const match = page.locator('[aria-label="Match"]')
+  await expect(match.getByRole('button', { name: 'Rally 1' })).toBeVisible({ timeout: 30_000 })
+  await expect(match.locator('.match-shot').first()).toBeVisible()
+  await match.screenshot({ path: 'test-results/match.png' })
 })
 
 test('calls a live bounce in on the court marked for this phone', async ({ page }) => {

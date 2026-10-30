@@ -117,6 +117,7 @@ export function CourtPlane({
     (owns && saved?.landmarks ? saved.landmarks : defaultLandmarks(owns && saved ? saved.preset : 'tennis-doubles')).slice(0, clicked),
   )
   const [callArea, setCallArea] = useState<string>(courtArea(preset, owns ? saved?.callArea : undefined).id)
+  const [courtName, setCourtName] = useState(owns ? (saved?.name ?? '') : '')
   const problem = landmarksProblem(preset, landmarks, true)
   const setId = LANDMARK_SETS[preset].find((set) => set.landmarks.join() === landmarks.join())?.id ?? 'custom'
   const completed = useMemo(
@@ -174,7 +175,7 @@ export function CourtPlane({
     }
   }, [image, full, preset, snapshot, sourceWidth, sourceHeight])
 
-  function publish(nextPoints: CourtPoint[], nextCallArea = callArea) {
+  function publish(nextPoints: CourtPoint[], nextCallArea = callArea, nextName = courtName) {
     const done = complete(preset, landmarks, nextPoints, sourceWidth, sourceHeight)
     if (!done || 'error' in done) return
     const court: CourtCalibration = {
@@ -185,6 +186,7 @@ export function CourtPlane({
       imagePoints: done.imagePoints,
       callArea: nextCallArea,
     }
+    if (nextName.trim()) court.name = nextName.trim()
     if (done.landmarks.join() !== defaultLandmarks(preset).join()) court.landmarks = done.landmarks
     if (done.estimated) court.estimatedPoints = done.estimated
     if (deviceId) court.deviceId = deviceId
@@ -227,6 +229,7 @@ export function CourtPlane({
       const done = complete(preset, detected.landmarks, detected.imagePoints, sourceWidth, sourceHeight)
       if (done && !('error' in done)) {
         const court: CourtCalibration = { preset, assetId, sourceWidth, sourceHeight, imagePoints: done.imagePoints, callArea }
+        if (courtName.trim()) court.name = courtName.trim()
         if (done.landmarks.join() !== defaultLandmarks(preset).join()) court.landmarks = done.landmarks
         if (deviceId) court.deviceId = deviceId
         onSave(court)
@@ -324,6 +327,16 @@ export function CourtPlane({
           </label>
         ))}
       </details>
+      <label className="field">
+        <span>Court name</span>
+        <input
+          value={courtName}
+          placeholder="Court 1"
+          maxLength={40}
+          onChange={(event) => setCourtName(event.target.value)}
+          onBlur={() => publish(points)}
+        />
+      </label>
       <label className="field">
         <span>Call bounces for</span>
         <select

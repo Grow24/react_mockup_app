@@ -66,6 +66,7 @@ import {
   type BallPoint,
   type BallTrack,
   type PersonPose,
+  type PlayerProfile,
   type PoseTrack,
   type MotionTrack,
   type CameraRecord,
@@ -247,6 +248,11 @@ function asCourt(value: unknown): CourtCalibration | undefined {
     next.callArea = court.callArea
   }
   if (estimated) next.estimatedPoints = estimated
+  if (court.name != null) {
+    if (typeof court.name !== 'string') return undefined
+    const name = court.name.trim().slice(0, 40)
+    if (name) next.name = name
+  }
   if (court.deviceId != null) {
     if (typeof court.deviceId !== 'string' || !isUuid(court.deviceId)) return undefined
     next.deviceId = court.deviceId
@@ -334,7 +340,47 @@ function asPerson(value: unknown, width: number, height: number): PersonPose | u
     if (typeof person.player !== 'string' || !PLAYER.test(person.player)) return undefined
     next.player = person.player
   }
+  if (person.id != null) {
+    if (typeof person.id !== 'string' || !/^[A-H]$/.test(person.id)) return undefined
+    next.id = person.id
+  }
+  if (person.racket != null) {
+    const racket = person.racket
+    if (
+      typeof racket !== 'object' ||
+      !finiteIn(racket.x, -width, width * 2) ||
+      !finiteIn(racket.y, -height, height * 2) ||
+      !finiteIn(racket.width, 0, width * 2) ||
+      !finiteIn(racket.height, 0, height * 2) ||
+      !finiteIn(racket.score, 0, 1) ||
+      (racket.hand !== 'left' && racket.hand !== 'right')
+    ) {
+      return undefined
+    }
+    next.racket = { x: racket.x, y: racket.y, width: racket.width, height: racket.height, score: racket.score, hand: racket.hand }
+  }
   return next
+}
+
+function asProfiles(value: unknown): PlayerProfile[] | undefined {
+  if (!Array.isArray(value) || value.length > 8) return undefined
+  const profiles: PlayerProfile[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return undefined
+    const profile = item as Partial<PlayerProfile>
+    const color = (rgb: unknown) => Array.isArray(rgb) && rgb.length === 3 && rgb.every((part) => finiteIn(part, 0, 255))
+    if (typeof profile.id !== 'string' || !/^[A-H]$/.test(profile.id) || !color(profile.torso) || !color(profile.legs)) return undefined
+    if (!Array.isArray(profile.histogram) || profile.histogram.length > 200 || !profile.histogram.every((part) => finiteIn(part, 0, 1))) return undefined
+    if (!finiteIn(profile.frames, 0, 100000)) return undefined
+    profiles.push({
+      id: profile.id,
+      histogram: profile.histogram.slice(),
+      torso: profile.torso!.slice() as [number, number, number],
+      legs: profile.legs!.slice() as [number, number, number],
+      frames: profile.frames,
+    })
+  }
+  return profiles
 }
 
 function asPoseTrack(value: unknown, assetId: string): PoseTrack | undefined {
@@ -358,6 +404,8 @@ function asPoseTrack(value: unknown, assetId: string): PoseTrack | undefined {
     }
     frames.push({ t: item.t, people })
   }
+  const players = track.players == null ? undefined : asProfiles(track.players)
+  if (track.players != null && !players) return undefined
   return {
     assetId,
     modelId: track.modelId,
@@ -367,6 +415,7 @@ function asPoseTrack(value: unknown, assetId: string): PoseTrack | undefined {
     duration: track.duration,
     createdAt: track.createdAt,
     frames,
+    ...(players ? { players } : {}),
   }
 }
 

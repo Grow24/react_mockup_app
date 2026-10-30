@@ -241,6 +241,17 @@ h1, h2, h3 {
 .virtual-view { height: 420px; }
 .check { display: flex; gap: 8px; align-items: center; font-size: 0.9rem; }
 .video-still { overflow: hidden; }
+.player-line { display: flex; gap: 8px; align-items: center; }
+.match-timeline { position: relative; height: 34px; background: #ece4d8; border-radius: 8px; margin: 6px 0 14px; }
+.match-span { position: absolute; top: 8px; height: 18px; border: 0; border-radius: 4px; padding: 0; cursor: pointer; }
+.match-span.rally { background: #2e6b4a; }
+.match-span.gap { background: #b9ada0; }
+.match-span.break { background: #6b625a; }
+.match-shot {
+  position: absolute; top: -6px; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; border: 2px solid #fffdf9;
+  font-size: 10px; font-weight: 700; color: #161310; padding: 0; cursor: pointer; line-height: 14px;
+}
+.player-swatch { display: inline-grid; grid-template-rows: 1fr 1fr; width: 14px; height: 22px; border-radius: 3px; overflow: hidden; flex: none; border: 1px solid #ddd4c8; }
 .ball-frame { will-change: transform; }
 
 .skeleton-view canvas {

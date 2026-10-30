@@ -59,6 +59,19 @@ export type PersonPose = {
   score: number
   keypoints: number[]
   player?: string
+  // The same letter for the same person all through the video: A, B, C, D.
+  id?: string
+  // The racquet in their hand this frame, and which hand holds it.
+  racket?: Box & { score: number; hand: 'left' | 'right' }
+}
+
+// What a lettered player looks like: shirt and shorts color histograms, and their average colors.
+export type PlayerProfile = {
+  id: string
+  histogram: number[]
+  torso: [number, number, number]
+  legs: [number, number, number]
+  frames: number
 }
 
 export type AiSnapshot = {
@@ -186,6 +199,8 @@ export type CourtCalibration = {
   landmarks?: string[]
   // An id from COURT_AREAS: the part of the court that counts as in.
   callArea?: string
+  // What this court is called at the venue, like "Court 1".
+  name?: string
   // How many of the last image points were estimated (from three clicks and a level phone), not clicked.
   // Estimated points may lie outside the photo.
   estimatedPoints?: number
@@ -197,6 +212,7 @@ export const COURT_PRESETS: Record<CourtPreset, { label: string; widthMeters: nu
 }
 
 export const SPORTS_BALL_CLASS = 32
+export const TENNIS_RACKET_CLASS = 38
 
 export type BallPoint = {
   t: number
@@ -234,6 +250,7 @@ export type PoseTrack = {
   duration: number
   createdAt: number
   frames: PoseFrame[]
+  players?: PlayerProfile[]
 }
 
 // Two minutes at 30 frames per second.

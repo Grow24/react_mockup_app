@@ -1,6 +1,6 @@
 import type { PersonPose } from '../../shared/contracts.ts'
 import type { AiSnapshot, PosePoint } from '../types'
-import { keypoint, PERSON_BONES, PLAYER_COLORS, playerName } from './players'
+import { keypoint, PERSON_BONES, personColor, personName } from './players'
 
 const COLORS = ['#f3d38a', '#9ee8e2', '#f0b7a4', '#d7c4f2']
 
@@ -78,14 +78,14 @@ export function drawPeople(
   people: PersonPose[],
   scaleX: number,
   scaleY: number,
-  caption: (person: PersonPose) => string | null = (person) => (person.player ? playerName(person.player) : null),
+  caption: (person: PersonPose) => string | null = (person) => (person.player || person.id ? personName(person) : null),
 ) {
   ctx.save()
   ctx.lineCap = 'round'
   ctx.font = '700 12px "Avenir Next", "Segoe UI", sans-serif'
   ctx.textBaseline = 'alphabetic'
   for (const person of people) {
-    const color = (person.player && PLAYER_COLORS[person.player]) || '#c9c1b6'
+    const color = personColor(person)
     ctx.strokeStyle = color
     ctx.fillStyle = color
     ctx.lineWidth = 3
@@ -104,6 +104,12 @@ export function drawPeople(
       ctx.beginPath()
       ctx.arc(point.x * scaleX, point.y * scaleY, 2.5, 0, Math.PI * 2)
       ctx.fill()
+    }
+    if (person.racket) {
+      ctx.setLineDash([4, 3])
+      ctx.lineWidth = 2
+      ctx.strokeRect(person.racket.x * scaleX, person.racket.y * scaleY, person.racket.width * scaleX, person.racket.height * scaleY)
+      ctx.setLineDash([])
     }
     const text = caption(person)
     if (text) {

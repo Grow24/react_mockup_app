@@ -7,12 +7,12 @@ import { courtLines, courtWorldPoints } from '../../shared/court.ts'
 import { courtFitsTrack } from '../vision/ball'
 import { cameraFromCourt, courtHomography, flightAt, positionAt, type FlightFit, type Vec3 } from '../vision/flight'
 import { sharedFlightFit } from '../vision/flightFit'
-import { feetOnCourt, frameAt, PERSON_BONES, PLAYER_COLORS, playerName } from '../vision/players'
+import { feetOnCourt, frameAt, PERSON_BONES, personColor, personName } from '../vision/players'
 import { DEFAULT_VIEW, liftPerson, parseViewCommand, viewPose, type ViewSpot } from '../vision/virtualCamera'
 import { length, useUnits, xyz } from '../units'
 
 type Pose = { position: Vec3; target: Vec3; label: string }
-const PLAYER_SLOTS = ['near', 'far', 'near-2', 'far-2'] as const
+const PLAYER_SLOTS = 4
 
 const GROUND_VERTEX = `
   varying vec2 vCourt;
@@ -165,14 +165,15 @@ export function VirtualView({
     const trail = new THREE.Line(trailGeometry, keep(new THREE.LineBasicMaterial({ color: 0xf3d38a })))
     scene.add(trail)
 
-    const players = PLAYER_SLOTS.map((slot) => {
-      const color = new THREE.Color(PLAYER_COLORS[slot] ?? '#c9c1b6')
+    const players = Array.from({ length: PLAYER_SLOTS }, () => {
       const geometry = keep(new THREE.BufferGeometry())
       geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(PERSON_BONES.length * 6), 3))
-      const bones = new THREE.LineSegments(geometry, keep(new THREE.LineBasicMaterial({ color })))
-      const head = new THREE.Mesh(keep(new THREE.SphereGeometry(0.12, 12, 12)), keep(new THREE.MeshBasicMaterial({ color })))
+      const boneMaterial = keep(new THREE.LineBasicMaterial({ color: 0xc9c1b6 }))
+      const headMaterial = keep(new THREE.MeshBasicMaterial({ color: 0xc9c1b6 }))
+      const bones = new THREE.LineSegments(geometry, boneMaterial)
+      const head = new THREE.Mesh(keep(new THREE.SphereGeometry(0.12, 12, 12)), headMaterial)
       scene.add(bones, head)
-      return { slot, bones, head, geometry }
+      return { bones, head, geometry, boneMaterial, headMaterial }
     })
 
     let appliedPose: Pose | null = null
@@ -222,9 +223,13 @@ export function VirtualView({
         lines.push(`Ball: ${xyz(p, shownUnits)}`)
       }
 
-      const people = track ? (frameAt(track, t)?.people ?? []) : []
-      for (const item of players) {
-        const person = people.find((candidate) => candidate.player === item.slot)
+      const people = track ? (frameAt(track, t)?.people ?? []).filter((candidate) => candidate.player || candidate.id) : []
+      for (const [slot, item] of players.entries()) {
+        const person = people[slot]
+        if (person) {
+          item.boneMaterial.color.set(personColor(person))
+          item.headMaterial.color.set(personColor(person))
+        }
         const feet = person && track ? feetOnCourt(person, court, track.sourceWidth, track.sourceHeight) : null
         const joints =
           person && feet && recorded && track
@@ -246,7 +251,7 @@ export function VirtualView({
         const nose = joints[0]
         item.head.visible = !!nose
         if (nose) item.head.position.copy(place(nose))
-        lines.push(`${playerName(item.slot)}: feet at ${xyz({ ...feet!, z: 0 }, shownUnits)}`)
+        lines.push(`${personName(person!)}: feet at ${xyz({ ...feet!, z: 0 }, shownUnits)}`)
       }
 
       const text = lines.join('\n')

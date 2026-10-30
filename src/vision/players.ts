@@ -92,6 +92,38 @@ export function assignPlayers(people: PersonPose[], court: CourtCalibration | nu
   return byDepth.map((person, index) => ({ ...person, player: index === 0 ? 'near' : 'far' }))
 }
 
+// Gives each racquet to the player whose wrist is nearest it, if near enough to be in their hand.
+export function holdRackets(people: PersonPose[], rackets: { box: { x: number; y: number; width: number; height: number }; score: number }[]) {
+  const held = people.map((person) => ({ ...person }))
+  for (const racket of rackets) {
+    const center = { x: racket.box.x + racket.box.width / 2, y: racket.box.y + racket.box.height / 2 }
+    let owner = -1
+    let ownerHand: 'left' | 'right' = 'right'
+    let nearest = Number.POSITIVE_INFINITY
+    for (let index = 0; index < held.length; index += 1) {
+      const person = held[index]!
+      for (const [hand, joint] of [
+        ['left', JOINTS.leftWrist],
+        ['right', JOINTS.rightWrist],
+      ] as const) {
+        const wrist = keypoint(person, joint)
+        if (!wrist) continue
+        const distance = Math.hypot(wrist.x - center.x, wrist.y - center.y)
+        if (distance <= person.box.height * 0.45 && distance < nearest) {
+          owner = index
+          ownerHand = hand
+          nearest = distance
+        }
+      }
+    }
+    const holder = held[owner]
+    if (holder && (!holder.racket || holder.racket.score < racket.score)) {
+      holder.racket = { ...racket.box, score: racket.score, hand: ownerHand }
+    }
+  }
+  return held
+}
+
 export function playerName(player: string | undefined) {
   if (player === 'near') return 'Near player'
   if (player === 'far') return 'Far player'
@@ -105,6 +137,36 @@ export const PLAYER_COLORS: Record<string, string> = {
   far: '#e0603c',
   'near-2': '#b8e6a0',
   'far-2': '#f3a37a',
+}
+
+export const ID_COLORS: Record<string, string> = {
+  A: '#7fd8cf',
+  B: '#e0603c',
+  C: '#b8e6a0',
+  D: '#f3a37a',
+  E: '#c8a8f0',
+  F: '#f0d870',
+  G: '#9fc3f0',
+  H: '#e8a0c8',
+}
+
+// "Player A (near)", or the side alone when no letter was given.
+export function personName(person: { id?: string; player?: string }) {
+  if (!person.id) return playerName(person.player)
+  const side = person.player?.startsWith('near') ? ' (near)' : person.player?.startsWith('far') ? ' (far)' : ''
+  return `Player ${person.id}${side}`
+}
+
+export function personColor(person: { id?: string; player?: string }) {
+  return (person.id && ID_COLORS[person.id]) || (person.player && PLAYER_COLORS[person.player]) || '#c9c1b6'
+}
+
+// Where on the court a tennis player stands, by distance from the net.
+export function courtZone(spot: { x: number; y: number }, lengthMeters: number) {
+  const fromNet = Math.abs(spot.y - lengthMeters / 2)
+  if (fromNet <= 4.5) return 'net' as const
+  if (fromNet >= lengthMeters / 2 - 1.5) return 'baseline' as const
+  return 'mid' as const
 }
 
 // The angle at joint b between a and c, in degrees. Measured in the image, so it reads true only
@@ -141,28 +203,34 @@ export function frameAt(track: PoseTrack, t: number): PoseFrame | null {
   return best
 }
 
-// Each named player's feet path on the court, and how far they moved.
+// Each player's feet path on the court, how far they moved, and how long they spent at the
+// baseline, in mid-court, and at the net. Players are keyed by letter, or by side without one.
 export function playerPaths(track: PoseTrack, court: CourtCalibration | null) {
   const paths = new Map<string, { t: number; x: number; y: number }[]>()
   for (const frame of track.frames) {
     for (const person of frame.people) {
-      if (!person.player) continue
+      const key = person.id ?? person.player
+      if (!key) continue
       const spot = feetOnCourt(person, court, track.sourceWidth, track.sourceHeight)
       if (!spot) continue
-      const list = paths.get(person.player) ?? []
+      const list = paths.get(key) ?? []
       list.push({ t: frame.t, ...spot })
-      paths.set(person.player, list)
+      paths.set(key, list)
     }
   }
-  const summary = new Map<string, { meters: number; seen: number }>()
+  const lengthMeters = court ? COURT_PRESETS[court.preset].lengthMeters : 0
+  const summary = new Map<string, { meters: number; seen: number; zones: { baseline: number; mid: number; net: number } }>()
   for (const [player, path] of paths) {
     let meters = 0
-    for (let index = 1; index < path.length; index += 1) {
+    const zones = { baseline: 0, mid: 0, net: 0 }
+    for (let index = 0; index < path.length; index += 1) {
+      if (court?.preset === 'tennis-doubles') zones[courtZone(path[index]!, lengthMeters)] += 1
+      if (index === 0) continue
       const step = Math.hypot(path[index]!.x - path[index - 1]!.x, path[index]!.y - path[index - 1]!.y)
       // A jump faster than a sprint is a misplaced foot, not movement.
       if (step / Math.max(1e-3, path[index]!.t - path[index - 1]!.t) < 10) meters += step
     }
-    summary.set(player, { meters, seen: path.length })
+    summary.set(player, { meters, seen: path.length, zones })
   }
   return { paths, summary }
 }

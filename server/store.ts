@@ -451,6 +451,7 @@ export function readCourts(sessionId: string): CourtCalibration[] {
       if (court.landmarks) clean.landmarks = court.landmarks
       if (court.callArea) clean.callArea = court.callArea
       if (court.estimatedPoints) clean.estimatedPoints = court.estimatedPoints
+      if (court.name) clean.name = court.name
       if (row.device_id) clean.deviceId = row.device_id
       courts.push(clean)
     } catch {

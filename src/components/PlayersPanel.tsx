@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
-import type { CourtCalibration, MotionTrack, PoseTrack } from '../../shared/contracts.ts'
+import type { CourtCalibration, MotionTrack, PlayerProfile, PoseTrack } from '../../shared/contracts.ts'
+import { courtPixelSize, mapPixel } from '../vision/court'
+import { drawCourtLines } from '../vision/courtMap'
 import { motionAt, movedCourt } from '../vision/motion'
 import { drawPeople, frameRect } from '../vision/draw'
 import {
   feetOnCourt,
   frameAt,
   jointAngles,
-  playerName,
+  personColor,
+  personName,
   playerPaths,
 } from '../vision/players'
 import { POSE_FPS_CHOICES, trackPlayers } from '../vision/playerTracker'
@@ -41,7 +44,7 @@ function momentLines(track: PoseTrack, court: CourtCalibration | null, t: number
     const feet = feetOnCourt(person, court, track.sourceWidth, track.sourceHeight)
     const angles = jointAngles(person)
     const where = feet ? `feet at ${xyz({ ...feet, z: 0 }, units)}` : 'mark the court to place the feet'
-    return `${playerName(person.player)} · ${where} · knees L ${angleText(angles.leftKnee)} R ${angleText(angles.rightKnee)} · elbows L ${angleText(angles.leftElbow)} R ${angleText(angles.rightElbow)} · hips L ${angleText(angles.leftHip)} R ${angleText(angles.rightHip)}`
+    return `${personName(person)} · ${where} · knees L ${angleText(angles.leftKnee)} R ${angleText(angles.rightKnee)} · elbows L ${angleText(angles.leftElbow)} R ${angleText(angles.rightElbow)} · hips L ${angleText(angles.leftHip)} R ${angleText(angles.rightHip)}`
   })
 }
 
@@ -88,7 +91,7 @@ export function PoseOverlay({
       const here = placed && moved ? movedCourt(placed, moved) : placed
       drawPeople(context, now.people, bounds.width / track.sourceWidth, bounds.height / track.sourceHeight, (person) => {
         const feet = feetOnCourt(person, here, track.sourceWidth, track.sourceHeight)
-        return `${playerName(person.player)}${feet ? ` · ${xyz(feet, units)}` : ''}`
+        return `${personName(person)}${feet ? ` · ${xyz(feet, units)}` : ''}`
       })
     }
     frame = requestAnimationFrame(draw)
@@ -96,6 +99,72 @@ export function PoseOverlay({
   }, [videoRef, track, placed, units, motion])
 
   return <canvas ref={canvasRef} className="annotation" aria-hidden="true" />
+}
+
+const MAP_PAD = 16
+const TRAIL_SECONDS = 3
+
+// Where every player stands on the top-down court at the video's time, with their last few seconds.
+function PositionMap({ videoRef, track, court }: { videoRef: RefObject<HTMLVideoElement | null>; track: PoseTrack; court: CourtCalibration }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const { paths } = useMemo(() => playerPaths(track, court), [track, court])
+
+  useEffect(() => {
+    let frame = 0
+    let drawn = -1
+    const draw = () => {
+      frame = requestAnimationFrame(draw)
+      const video = videoRef.current
+      const canvas = canvasRef.current
+      if (!video || !canvas || video.currentTime === drawn) return
+      drawn = video.currentTime
+      const size = courtPixelSize(court.preset)
+      canvas.width = size.width + MAP_PAD * 2
+      canvas.height = size.height + MAP_PAD * 2
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.fillStyle = '#161310'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.translate(MAP_PAD, MAP_PAD)
+      drawCourtLines(context, court)
+      context.font = '700 11px "Avenir Next", "Segoe UI", sans-serif'
+      context.textAlign = 'center'
+      context.textBaseline = 'middle'
+      for (const [key, path] of paths) {
+        const color = personColor(/^[A-H]$/.test(key) ? { id: key } : { player: key })
+        const recent = path.filter((spot) => spot.t <= video.currentTime && spot.t >= video.currentTime - TRAIL_SECONDS)
+        if (recent.length === 0) continue
+        context.strokeStyle = color
+        context.globalAlpha = 0.6
+        context.lineWidth = 2
+        context.beginPath()
+        recent.forEach((spot, index) => {
+          const at = mapPixel(court.preset, spot)
+          if (index === 0) context.moveTo(at.x, at.y)
+          else context.lineTo(at.x, at.y)
+        })
+        context.stroke()
+        context.globalAlpha = 1
+        const now = recent[recent.length - 1]!
+        if (video.currentTime - now.t > 0.6) continue
+        const at = mapPixel(court.preset, now)
+        context.fillStyle = color
+        context.beginPath()
+        context.arc(at.x, at.y, 9, 0, Math.PI * 2)
+        context.fill()
+        context.fillStyle = '#161310'
+        context.fillText(/^[A-H]$/.test(key) ? key : key[0]!.toUpperCase(), at.x, at.y + 0.5)
+      }
+    }
+    frame = requestAnimationFrame(draw)
+    return () => cancelAnimationFrame(frame)
+  }, [videoRef, paths, court])
+
+  return <canvas ref={canvasRef} className="court-flat" aria-label="Where the players stand on the court" />
+}
+
+function swatch(rgb: [number, number, number]) {
+  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`
 }
 
 type Progress = { done: number; total: number; found: number }
@@ -107,6 +176,7 @@ export function PlayersPanel({
   track,
   steadyTrack,
   court,
+  seeds,
   onSave,
   onClear,
 }: {
@@ -117,6 +187,8 @@ export function PlayersPanel({
   // The same track with camera motion taken out, for feet positions and distances.
   steadyTrack?: PoseTrack | null
   court: CourtCalibration | null
+  // Players lettered in the session's other videos, so the same person gets the same letter.
+  seeds?: PlayerProfile[]
   onSave: (track: PoseTrack) => void
   onClear: () => void
 }) {
@@ -166,7 +238,7 @@ export function PlayersPanel({
     setError(null)
     setProgress(null)
     try {
-      const next = await trackPlayers(url, assetId, court, controller.signal, (done, total, found) => setProgress({ done, total, found }), fps)
+      const next = await trackPlayers(url, assetId, court, controller.signal, (done, total, found) => setProgress({ done, total, found }), fps, seeds ?? [])
       onSave(next)
     } catch (caught) {
       if (!(caught instanceof DOMException && caught.name === 'AbortError')) {
@@ -183,8 +255,9 @@ export function PlayersPanel({
     <section className="still-pose ball-panel" aria-label="Players">
       <h4>Players</h4>
       <p className="muted">
-        YOLOv8n-pose finds 17 joints on every person in {fps} frames per second of this video and names the players
-        by their side of the net. {court ? 'People well off the court, like the umpire, are left out.' : 'Mark the court on a frame from this camera to place their feet in court coordinates.'} The
+        YOLOv8n-pose finds 17 joints on every person in {fps} frames per second of this video. Each player gets a letter
+        (A, B, C, D) from the colors of their shirt and shorts and where they stand, and keeps it through the video and the
+        session's other videos. {court ? 'People well off the court, like the umpire, are left out.' : 'Mark the court on a frame from this camera to place their feet in court coordinates.'} The
         first run downloads about 13 MB.
       </p>
       <label className="field">
@@ -238,11 +311,28 @@ export function PlayersPanel({
       {track && summary ? (
         <>
           <ul className="label-list">
-            {[...summary.entries()].map(([player, item]) => (
-              <li key={player}>
-                {playerName(player)}: on court in {item.seen} of {track.frames.length} frames · moved {length(item.meters, units)}
-              </li>
-            ))}
+            {[...summary.entries()].map(([player, item]) => {
+              const profile = track.players?.find((candidate) => candidate.id === player)
+              const lettered = /^[A-H]$/.test(player)
+              const total = item.zones.baseline + item.zones.mid + item.zones.net
+              const share = (count: number) => `${Math.round((count / Math.max(1, total)) * 100)}%`
+              return (
+                <li key={player} className="player-line">
+                  {profile ? (
+                    <span className="player-swatch" title="Shirt and shorts">
+                      <span style={{ background: swatch(profile.torso) }} />
+                      <span style={{ background: swatch(profile.legs) }} />
+                    </span>
+                  ) : null}
+                  <span>
+                    {lettered ? `Player ${player}` : personName({ player })}
+                    {placed?.name ? ` on ${placed.name}` : ''}: on court in {item.seen} of {track.frames.length} frames · moved{' '}
+                    {length(item.meters, units)}
+                    {total > 0 ? ` · baseline ${share(item.zones.baseline)}, mid-court ${share(item.zones.mid)}, net ${share(item.zones.net)}` : ''}
+                  </span>
+                </li>
+              )
+            })}
             {summary.size === 0 ? (
               <li>
                 {track.frames.filter((frame) => frame.people.length > 0).length} of {track.frames.length} frames show players
@@ -250,6 +340,7 @@ export function PlayersPanel({
               </li>
             ) : null}
           </ul>
+          {placed ? <PositionMap videoRef={videoRef} track={measured!} court={placed} /> : null}
           <ul ref={momentRef} className="label-list" aria-live="off" />
           <p className="muted">
             Angles are read in the image, so they are true only when the limb faces the camera.

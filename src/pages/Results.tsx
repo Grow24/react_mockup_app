@@ -9,6 +9,7 @@ import { FenceCanvas, FencePanel } from '../components/FencePanel'
 import type { FenceRemover } from '../vision/fence'
 import { PlayersPanel, PoseOverlay } from '../components/PlayersPanel'
 import { VirtualView } from '../components/VirtualView'
+import { MatchPanel } from '../components/MatchPanel'
 import { SkeletonView } from '../components/SkeletonView'
 import { TakePanel } from '../components/TakePanel'
 import { formatPercent, formatPerformance, formatWhen } from '../format'
@@ -280,9 +281,18 @@ export function Results() {
                 track={poseTrack}
                 steadyTrack={steadyPose}
                 court={court}
+                seeds={Object.values(poseTracks)
+                  .filter((other) => other.assetId !== selected.id)
+                  .sort((a, b) => b.createdAt - a.createdAt)
+                  .flatMap((other) => other.players ?? [])
+                  .filter((player, index, all) => all.findIndex((other) => other.id === player.id) === index)}
                 onSave={(track) => setPoseTrack(selected.id, track)}
                 onClear={() => setPoseTrack(selected.id, null)}
               />
+            ) : null}
+
+            {selected.kind === 'video' ? (
+              <MatchPanel key={`match-${selected.id}`} videoRef={videoRef} ballTrack={steadyBall} poseTrack={steadyPose} court={court} />
             ) : null}
 
             {selected.kind === 'video' && court && courtFitsVideo ? (
