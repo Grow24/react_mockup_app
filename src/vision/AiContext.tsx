@@ -1,15 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AiSnapshot } from '../types'
 import { useSession } from '../session/context'
-import { AiContext, type AiStatus } from './context'
+import { AiContext, type AiStatus, type PoseMode } from './context'
 import { loadEngines, resetEngines, type DelegateName, type Engines } from './engine'
 import { findModel } from './models'
-import { prepareOnnx, resetOnnx } from './onnxDetector'
+import { prepareOnnx, preparePeople, resetOnnx } from './onnxDetector'
 import { OBJECT_MODEL_ID, type ObjectDetectorId } from './yolo'
 
 const ENABLED_KEY = 'pbmp-ai-enabled'
 const CONFIDENCE_KEY = 'pbmp-ai-confidence'
 const DETECTOR_KEY = 'pbmp-object-detector'
+const POSE_MODE_KEY = 'pbmp-pose-mode'
+
+function readPoseMode(): PoseMode {
+  try {
+    return localStorage.getItem(POSE_MODE_KEY) === 'people' ? 'people' : 'single'
+  } catch {
+    return 'single'
+  }
+}
 
 function readEnabled() {
   try {
@@ -60,6 +69,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [enabled, setEnabledState] = useState(readEnabled)
   const [confidence, setConfidenceState] = useState(readConfidence)
   const [chosenDetector, setObjectDetectorState] = useState<ObjectDetectorId>(readDetector)
+  const [poseMode, setPoseModeState] = useState<PoseMode>(readPoseMode)
+  const [peopleReady, setPeopleReady] = useState(false)
   // A custom model that was removed from the session falls back to MediaPipe.
   const objectModel = chosenDetector === OBJECT_MODEL_ID ? null : findModel(models, chosenDetector)
   const objectDetector = objectModel ? chosenDetector : OBJECT_MODEL_ID
@@ -105,11 +116,18 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setError(null)
   }, [])
 
+  const setPoseMode = useCallback((next: PoseMode) => {
+    writeSetting(POSE_MODE_KEY, next)
+    setPoseModeState(next)
+    setError(null)
+  }, [])
+
   const retry = useCallback(() => {
     resetEngines()
     resetOnnx()
     setEngines(null)
     setOnnxReadyId(null)
+    setPeopleReady(false)
     setAttempt((current) => current + 1)
     setEnabled(true)
   }, [setEnabled])
@@ -160,11 +178,28 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
   }, [enabled, modelId, attempt])
 
+  useEffect(() => {
+    if (!enabled || poseMode !== 'people') return
+    let cancelled = false
+    preparePeople()
+      .then(() => {
+        if (!cancelled) setPeopleReady(true)
+      })
+      .catch((caught) => {
+        if (cancelled) return
+        console.error(caught)
+        setError(loadError(caught))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [enabled, poseMode, attempt])
+
   const status: AiStatus = !enabled
     ? 'off'
     : error
       ? 'error'
-      : !engines || (objectModel && onnxReadyId !== objectModel.id)
+      : !engines || (objectModel && onnxReadyId !== objectModel.id) || (poseMode === 'people' && !peopleReady)
         ? 'loading'
         : 'ready'
 
@@ -174,6 +209,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       confidence,
       objectDetector,
       objectModel,
+      poseMode,
       status,
       error,
       delegate,
@@ -182,6 +218,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       setEnabled,
       setConfidence,
       setObjectDetector,
+      setPoseMode,
       retry,
       publish,
       readSnapshot,
@@ -191,6 +228,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       confidence,
       objectDetector,
       objectModel,
+      poseMode,
       status,
       error,
       delegate,
@@ -199,6 +237,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       setEnabled,
       setConfidence,
       setObjectDetector,
+      setPoseMode,
       retry,
       publish,
       readSnapshot,

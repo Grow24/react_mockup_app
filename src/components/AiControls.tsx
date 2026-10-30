@@ -4,6 +4,8 @@ import { useAi } from '../vision/context'
 import { modelChoices } from '../vision/models'
 import { onnxBackend } from '../vision/onnxDetector'
 import { OBJECT_MODEL_ID } from '../vision/yolo'
+import { playerName } from '../vision/players'
+import type { PoseMode } from '../vision/context'
 
 function statusLabel(status: string) {
   if (status === 'loading') return 'Loading'
@@ -17,7 +19,7 @@ export function AiControls() {
   const { models } = useSession()
   const model = ai.objectModel
   const poseReady =
-    (ai.latest?.pose.filter((point) => point.visibility >= 0.5).length ?? 0) >= 4
+    (ai.latest?.pose.filter((point) => point.visibility >= 0.5).length ?? 0) >= 4 || (ai.latest?.people?.length ?? 0) > 0
 
   return (
     <article className="card">
@@ -83,8 +85,20 @@ export function AiControls() {
         </select>
       </label>
       <p className="muted">
-        Every model draws the same kind of boxes, with its own class names. Add your own model below. The
-        skeleton does not change.
+        Every model draws the same kind of boxes, with its own class names. Add your own model below.
+      </p>
+
+      <label className="field">
+        <span>Pose model</span>
+        <select value={ai.poseMode} onChange={(event) => ai.setPoseMode(event.target.value as PoseMode)}>
+          <option value="single">MediaPipe: one person, with a 3D pose</option>
+          <option value="people">YOLOv8n-pose: every person, players named</option>
+        </select>
+      </label>
+      <p className="muted">
+        {ai.poseMode === 'people'
+          ? 'YOLOv8n-pose finds 17 joints on everyone in view (about 13 MB the first time). With the court marked for this phone, the near and far players are named and people off the court are left out.'
+          : 'MediaPipe follows one person with 33 points and a 3D pose.'}
       </p>
 
       <label className="field">
@@ -117,7 +131,11 @@ export function AiControls() {
                     {detection.label} {formatPercent(detection.score)}
                   </li>
                 ))}
-                <li>{poseReady ? 'Pose landmarks visible' : 'No pose in this frame'}</li>
+                {ai.latest.people?.length ? (
+                  ai.latest.people.map((person, index) => <li key={person.player ?? index}>{playerName(person.player)} found</li>)
+                ) : (
+                  <li>{poseReady ? 'Pose landmarks visible' : 'No pose in this frame'}</li>
+                )}
               </ul>
             )}
           </>

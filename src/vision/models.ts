@@ -1,5 +1,9 @@
-import { ONNX_MODEL_ID, SPORTS_BALL_CLASS, type CustomModel } from '../../shared/contracts.ts'
+import { ONNX_MODEL_ID, PEOPLE_MODEL_ID, SPORTS_BALL_CLASS, type CustomModel } from '../../shared/contracts.ts'
 import { COCO_LABELS, YOLO_INPUT, YOLO_MODEL_URL } from './yolo'
+
+// Ultralytics YOLOv8n-pose (AGPL-3.0), about 13 MB, pinned to one commit.
+export const PEOPLE_MODEL_URL =
+  'https://cdn.jsdelivr.net/gh/FatemeZamanian/YOLOv8-pose-onnxruntime-web@7d205675a3b440d1761d520de70c45d841d16b6c/public/model/yolov8n-pose.onnx'
 
 export type DetectorModel = {
   id: string
@@ -43,7 +47,16 @@ export function findModel(models: CustomModel[], id: string | null | undefined) 
   return record ? detectorModel(record) : null
 }
 
-export type ModelSpec = { key: string; url: string; inputSize: number; classCount: number; labels: string[] }
+export type ModelSpec = { key: string; url: string; inputSize: number; classCount: number; labels: string[]; task?: 'pose' }
+
+export const PEOPLE_SPEC: ModelSpec = {
+  key: PEOPLE_MODEL_ID,
+  url: PEOPLE_MODEL_URL,
+  inputSize: YOLO_INPUT,
+  classCount: 1,
+  labels: ['person'],
+  task: 'pose',
+}
 
 export function specOf(model: DetectorModel): ModelSpec {
   return {

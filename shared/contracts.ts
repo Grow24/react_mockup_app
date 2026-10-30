@@ -31,11 +31,42 @@ export type InferencePerformance = {
   droppedFrames: number
 }
 
+// COCO keypoint order, used by YOLOv8-pose.
+export const COCO_KEYPOINTS = [
+  'nose',
+  'left eye',
+  'right eye',
+  'left ear',
+  'right ear',
+  'left shoulder',
+  'right shoulder',
+  'left elbow',
+  'right elbow',
+  'left wrist',
+  'right wrist',
+  'left hip',
+  'right hip',
+  'left knee',
+  'right knee',
+  'left ankle',
+  'right ankle',
+] as const
+
+// One person from a multi-person pose model. keypoints is [x, y, score] for each COCO keypoint,
+// in source pixels. player is 'near' or 'far' (with -2 for a doubles partner) once placed on the court.
+export type PersonPose = {
+  box: Box
+  score: number
+  keypoints: number[]
+  player?: string
+}
+
 export type AiSnapshot = {
   at: number
   detections: Detection[]
   pose: PosePoint[]
   worldPose?: PosePoint[]
+  people?: PersonPose[]
   inferenceMs: number
   performance?: InferencePerformance
   objectModelId?: string
@@ -44,6 +75,8 @@ export type AiSnapshot = {
 export const OBJECT_MODEL_ID = 'mediapipe-efficientdet-lite0'
 export const ONNX_MODEL_ID = 'yolov8n-coco-onnx'
 export const POSE_MODEL_ID = 'mediapipe-pose-landmarker-lite'
+export const PEOPLE_MODEL_ID = 'yolov8n-pose-onnx'
+export const MAX_PEOPLE = 8
 
 export type AiModel = {
   id: string
@@ -153,6 +186,9 @@ export type CourtCalibration = {
   landmarks?: string[]
   // An id from COURT_AREAS: the part of the court that counts as in.
   callArea?: string
+  // How many of the last image points were estimated (from three clicks and a level phone), not clicked.
+  // Estimated points may lie outside the photo.
+  estimatedPoints?: number
 }
 
 export const COURT_PRESETS: Record<CourtPreset, { label: string; widthMeters: number; lengthMeters: number }> = {
@@ -185,6 +221,23 @@ export type BallTrack = {
 
 // 11 minutes at 30 frames per second.
 export const BALL_TRACK_LIMIT = 20000
+
+export type PoseFrame = { t: number; people: PersonPose[] }
+
+// The players' joints through a video, sampled like a ball track.
+export type PoseTrack = {
+  assetId: string
+  modelId: string
+  sourceWidth: number
+  sourceHeight: number
+  sampleFps: number
+  duration: number
+  createdAt: number
+  frames: PoseFrame[]
+}
+
+// Two minutes at 30 frames per second.
+export const POSE_TRACK_LIMIT = 3700
 
 export type ExerciseKind = 'strength' | 'bodyweight' | 'cardio' | 'timed'
 
@@ -267,5 +320,6 @@ export type SessionDetail = CaptureSession & {
   court: CourtCalibration | null
   courts: CourtCalibration[]
   ballTracks: BallTrack[]
+  poseTracks: PoseTrack[]
   models: CustomModel[]
 }

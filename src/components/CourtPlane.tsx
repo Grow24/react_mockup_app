@@ -1,23 +1,72 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { COURT_PRESETS, type CourtCalibration, type CourtPoint, type CourtPreset } from '../../shared/contracts.ts'
 import {
   COURT_AREAS,
   COURT_LANDMARKS,
   courtArea,
+  completingLandmark,
   defaultLandmarks,
   LANDMARK_SETS,
   landmarkById,
   landmarksProblem,
 } from '../../shared/court.ts'
 import { AnnotationCanvas } from './AnnotationCanvas'
+import { CourtLinesOverlay } from './CourtLinesOverlay'
 import type { AiSnapshot } from '../types'
+import { cameraText, levelCamera, levelSpread } from '../vision/cameraPose'
 import { frameRect } from '../vision/draw'
+import { cameraFromCourt, projectPoint } from '../vision/flight'
 import { renderCourt } from '../vision/opencv'
+import { length, useUnits } from '../units'
 
 const ANKLES = [
   { index: 27, label: 'Left ankle' },
   { index: 28, label: 'Right ankle' },
 ] as const
+
+type Completed = {
+  imagePoints: CourtPoint[]
+  landmarks: string[]
+  estimated: number
+  note: string | null
+  warning: string | null
+}
+
+// Four clicks are used as they are. Three clicks place a level camera, which then shows where a
+// fourth court point is, even outside the photo.
+function complete(
+  preset: CourtPreset,
+  landmarks: string[],
+  clicks: CourtPoint[],
+  width: number,
+  height: number,
+): Completed | { error: string } | null {
+  if (clicks.length !== landmarks.length) return null
+  if (landmarks.length === 4) return { imagePoints: clicks, landmarks, estimated: 0, note: null, warning: null }
+  const world = landmarks.map((id) => landmarkById(preset, id)!)
+  const fit = levelCamera(world, clicks, width, height)
+  const extra = completingLandmark(preset, landmarks)
+  if (!fit || !extra) {
+    return { error: 'No level camera fits these three points. Check each click, or pick four points.' }
+  }
+  const at = projectPoint(fit.camera, { x: extra.x, y: extra.y, z: 0 })
+  if (!at) return { error: 'The fourth point would be behind the camera. Pick another three points.' }
+  const spread = levelSpread(world, clicks, width, height, extra)
+  const rival = fit.others
+    .map((camera) => projectPoint(camera, { x: extra.x, y: extra.y, z: 0 }))
+    .some((other) => !other || Math.hypot(other.x - at.x, other.y - at.y) > 10)
+  return {
+    imagePoints: [...clicks, { x: at.x, y: at.y }],
+    landmarks: [...landmarks, extra.id],
+    estimated: 1,
+    note: `${extra.label} is estimated from a level phone${
+      spread && Number.isFinite(spread.pixels) ? `; it moves about ${spread.pixels.toFixed(0)} px if each click is 1.5 px off` : ''
+    }.`,
+    warning: rival
+      ? 'Two camera positions fit these three points. Check that the drawn lines sit on the court, or click four points.'
+      : null,
+  }
+}
 
 function markerStyle(
   point: CourtPoint,
@@ -59,15 +108,30 @@ export function CourtPlane({
   const imageRef = useRef<HTMLImageElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [image, setImage] = useState<HTMLImageElement | null>(null)
+  const clicked = owns && saved ? 4 - (saved.estimatedPoints ?? 0) : 4
+  const units = useUnits()
   const [preset, setPreset] = useState<CourtPreset>(owns && saved ? saved.preset : 'tennis-doubles')
-  const [points, setPoints] = useState<CourtPoint[]>(owns && saved ? saved.imagePoints : [])
+  const [points, setPoints] = useState<CourtPoint[]>(owns && saved ? saved.imagePoints.slice(0, clicked) : [])
   const [landmarks, setLandmarks] = useState<string[]>(
-    owns && saved?.landmarks ? saved.landmarks : defaultLandmarks(owns && saved ? saved.preset : 'tennis-doubles'),
+    (owns && saved?.landmarks ? saved.landmarks : defaultLandmarks(owns && saved ? saved.preset : 'tennis-doubles')).slice(0, clicked),
   )
   const [callArea, setCallArea] = useState<string>(courtArea(preset, owns ? saved?.callArea : undefined).id)
-  const problem = landmarksProblem(preset, landmarks)
+  const problem = landmarksProblem(preset, landmarks, true)
   const setId = LANDMARK_SETS[preset].find((set) => set.landmarks.join() === landmarks.join())?.id ?? 'custom'
-  const [lines, setLines] = useState<string[]>([])
+  const completed = useMemo(
+    () => (problem ? null : complete(preset, landmarks, points, sourceWidth, sourceHeight)),
+    [problem, preset, landmarks, points, sourceWidth, sourceHeight],
+  )
+  const full = completed && !('error' in completed) ? completed : null
+  const draft = useMemo<CourtCalibration | null>(
+    () =>
+      full
+        ? { preset, assetId, sourceWidth, sourceHeight, imagePoints: full.imagePoints, landmarks: full.landmarks, estimatedPoints: full.estimated }
+        : null,
+    [full, preset, assetId, sourceWidth, sourceHeight],
+  )
+  const camera = useMemo(() => (draft ? cameraFromCourt(draft) : null), [draft])
+  const [lines, setLines] = useState<{ label: string; fromLeft: number; fromNear: number }[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -78,7 +142,7 @@ export function CourtPlane({
 
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!image || points.length !== 4 || !canvas) {
+    if (!image || !full || !canvas) {
       setLines([])
       return
     }
@@ -90,7 +154,7 @@ export function CourtPlane({
       if (!point || point.visibility < 0.5) return []
       return [{ label: ankle.label, point: { x: point.x * sourceWidth, y: point.y * sourceHeight } }]
     })
-    renderCourt(image, canvas, { preset, landmarks, imagePoints: points }, sourceWidth, sourceHeight, markers, () => current)
+    renderCourt(image, canvas, { preset, landmarks: full.landmarks, imagePoints: full.imagePoints }, sourceWidth, sourceHeight, markers, () => current)
       .then((next) => {
         if (!current) return
         setLines(next)
@@ -105,24 +169,21 @@ export function CourtPlane({
     return () => {
       current = false
     }
-  }, [image, points, preset, landmarks, snapshot, sourceWidth, sourceHeight])
+  }, [image, full, preset, snapshot, sourceWidth, sourceHeight])
 
-  function publish(
-    nextPoints: CourtPoint[],
-    next: { preset?: CourtPreset; landmarks?: string[]; callArea?: string } = {},
-  ) {
-    const nextPreset = next.preset ?? preset
-    const nextLandmarks = next.landmarks ?? landmarks
-    if (nextPoints.length !== 4 || landmarksProblem(nextPreset, nextLandmarks)) return
+  function publish(nextPoints: CourtPoint[], nextCallArea = callArea) {
+    const done = complete(preset, landmarks, nextPoints, sourceWidth, sourceHeight)
+    if (!done || 'error' in done) return
     const court: CourtCalibration = {
-      preset: nextPreset,
+      preset,
       assetId,
       sourceWidth,
       sourceHeight,
-      imagePoints: nextPoints,
-      callArea: next.callArea ?? callArea,
+      imagePoints: done.imagePoints,
+      callArea: nextCallArea,
     }
-    if (nextLandmarks.join() !== defaultLandmarks(nextPreset).join()) court.landmarks = nextLandmarks
+    if (done.landmarks.join() !== defaultLandmarks(preset).join()) court.landmarks = done.landmarks
+    if (done.estimated) court.estimatedPoints = done.estimated
     if (deviceId) court.deviceId = deviceId
     onSave(court)
   }
@@ -137,7 +198,7 @@ export function CourtPlane({
   }
 
   function clickImage(event: MouseEvent<HTMLImageElement>) {
-    if (!image || points.length >= 4 || problem) return
+    if (!image || points.length >= landmarks.length || problem) return
     const bounds = frameRect(image.clientWidth, image.clientHeight, sourceWidth, sourceHeight)
     const rect = image.getBoundingClientRect()
     const x = event.clientX - rect.left - bounds.x
@@ -145,7 +206,7 @@ export function CourtPlane({
     if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) return
     const next = [...points, { x: (x / bounds.width) * sourceWidth, y: (y / bounds.height) * sourceHeight }]
     setPoints(next)
-    if (next.length === 4) publish(next)
+    if (next.length === landmarks.length) publish(next)
   }
 
   function clearCourt() {
@@ -157,13 +218,14 @@ export function CourtPlane({
   return (
     <div className="still-pose">
       <p className="muted">
-        Click four court points this camera can see, in the order below. They do not have to be the outer
-        corners: the service line ends or one half of the court work too. OpenCV.js builds the top-down plane.{' '}
+        Click court points this camera can see, in the order below. Four points can be any that span the
+        court, like the service line ends or one half. With the phone held level, three corners are enough and
+        the rest of the court is worked out, even outside the photo. OpenCV.js builds the top-down plane.{' '}
         {problem
           ? problem
-          : points.length < 4
+          : points.length < landmarks.length
             ? `Next: ${landmarkById(preset, landmarks[points.length]!)?.label}.`
-            : 'All four points are set.'}
+            : 'All points are set.'}
       </p>
       {saved && !owns ? (
         <p className="muted">
@@ -203,7 +265,7 @@ export function CourtPlane({
             </option>
           ))}
           <option value="custom" disabled={setId !== 'custom'}>
-            My own four points
+            My own points
           </option>
         </select>
       </label>
@@ -235,7 +297,7 @@ export function CourtPlane({
           value={callArea}
           onChange={(event) => {
             setCallArea(event.target.value)
-            publish(points, { callArea: event.target.value })
+            publish(points, event.target.value)
           }}
         >
           {COURT_AREAS[preset].map((area) => (
@@ -259,16 +321,21 @@ export function CourtPlane({
           sourceHeight={sourceHeight}
           snapshot={snapshot ?? null}
         />
+        <CourtLinesOverlay frameRef={imageRef} court={draft} mediaWidth={sourceWidth} mediaHeight={sourceHeight} />
         {image
-          ? points.map((point, index) => (
-              <span
-                key={`${index}-${point.x}-${point.y}`}
-                className="court-marker"
-                style={markerStyle(point, image, sourceWidth, sourceHeight)}
-              >
-                {index + 1}
-              </span>
-            ))
+          ? (full?.imagePoints ?? points).map((point, index) =>
+              index >= points.length &&
+              (point.x < 0 || point.y < 0 || point.x > sourceWidth || point.y > sourceHeight) ? null : (
+                <span
+                  key={`${index}-${point.x}-${point.y}`}
+                  className={index >= points.length ? 'court-marker estimated' : 'court-marker'}
+                  style={markerStyle(point, image, sourceWidth, sourceHeight)}
+                  title={index >= points.length ? 'Estimated' : undefined}
+                >
+                  {index + 1}
+                </span>
+              ),
+            )
           : null}
       </div>
       <div className="controls">
@@ -279,7 +346,7 @@ export function CourtPlane({
           onClick={() => {
             const next = points.slice(0, -1)
             setPoints(next)
-            if (owns && next.length < 4) onClear()
+            if (owns && next.length < landmarks.length) onClear()
           }}
         >
           Undo point
@@ -293,16 +360,35 @@ export function CourtPlane({
           {error}
         </p>
       ) : null}
+      {completed && 'error' in completed ? (
+        <p className="warn" role="alert">
+          {completed.error}
+        </p>
+      ) : null}
+      {full?.warning ? (
+        <p className="warn" role="alert">
+          {full.warning}
+        </p>
+      ) : null}
+      {full?.note ? <p className="note">{full.note}</p> : null}
+      {camera ? (
+        <p className="muted">
+          {cameraText(camera, units)}. The court origin (0, 0, 0) is where the left doubles sideline meets the
+          near baseline: x runs along the baseline, y toward the far baseline, and z up.
+        </p>
+      ) : null}
       {busy ? <p className="muted">Loading OpenCV.js and flattening the court.</p> : null}
-      {points.length === 4 ? <canvas ref={canvasRef} className="court-flat" /> : null}
+      {full ? <canvas ref={canvasRef} className="court-flat" /> : null}
       {lines.length > 0 ? (
         <ul className="label-list">
           {lines.map((line) => (
-            <li key={line}>{line}</li>
+            <li key={line.label}>
+              {line.label}: {length(line.fromLeft, units)} from the left line, {length(line.fromNear, units)} from the near line
+            </li>
           ))}
         </ul>
       ) : null}
-      {points.length === 4 && !busy && !error && lines.length === 0 ? (
+      {full && !busy && !error && lines.length === 0 ? (
         <p className="muted">No ankles in this capture. The court plane is still saved.</p>
       ) : null}
     </div>

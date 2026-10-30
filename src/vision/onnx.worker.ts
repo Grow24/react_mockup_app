@@ -1,6 +1,6 @@
 import * as ort from 'onnxruntime-web/webgpu'
 import type { ModelSpec } from './models'
-import { decodeYolo, letterbox, type DecodeOptions } from './yolo'
+import { decodeYolo, decodeYoloPose, letterbox, type DecodeOptions } from './yolo'
 
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/'
 // Threads need SharedArrayBuffer, which the browser only allows on a cross-origin isolated page.
@@ -151,6 +151,13 @@ self.onmessage = (event: MessageEvent<Message>) => {
       feeds[loaded.inputNames[0]!] = tensorFrom(bitmap, width, height, spec.inputSize)
       const output = await loaded.run(feeds)
       const first = output[loaded.outputNames[0]!]
+      if (spec.task === 'pose') {
+        const people = first
+          ? decodeYoloPose(first.data as Float32Array, first.dims, width, height, spec.inputSize, options?.minScore ?? 0.3)
+          : []
+        self.postMessage({ type: 'result', id, detections: [], people, inferenceMs: performance.now() - started })
+        return
+      }
       const detections = first
         ? decodeYolo(first.data as Float32Array, first.dims, width, height, spec.inputSize, {
             ...options,

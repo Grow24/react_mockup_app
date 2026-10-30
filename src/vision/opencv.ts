@@ -125,7 +125,7 @@ export async function renderCourt(
   const scaledPoints = court.imagePoints.map((point) => ({ x: point.x * scaleX, y: point.y * scaleY }))
   const { width, height } = courtPixelSize(preset)
   const created: CvMat[] = []
-  const lines: string[] = []
+  const lines: { label: string; fromLeft: number; fromNear: number }[] = []
   try {
     const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(scaledPoints))
     const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(mapPoints(court)))
@@ -168,9 +168,7 @@ export async function renderCourt(
         context.arc(pixel.x, pixel.y, 6, 0, Math.PI * 2)
         context.fill()
         const meters = courtMeters(preset, pixel)
-        lines.push(
-          `${marker.label}: ${meters.fromLeft.toFixed(1)} m from the left line, ${meters.fromNear.toFixed(1)} m from the near line`,
-        )
+        lines.push({ label: marker.label, fromLeft: meters.fromLeft, fromNear: meters.fromNear })
       } finally {
         srcPoint.delete()
         dstPoint.delete()

@@ -4,6 +4,7 @@ import { COURT_PRESETS, type CourtCalibration, type CourtPoint, type CourtPreset
 export type CourtLandmark = { id: string; label: string; x: number; y: number }
 export type CourtArea = { id: string; label: string; x0: number; y0: number; x1: number; y1: number }
 export type CourtLine = { from: CourtPoint; to: CourtPoint; dashed?: boolean }
+// Three-point sets assume the phone is held level and estimate a fourth point from that.
 export type LandmarkSet = { id: string; label: string; landmarks: string[] }
 
 const TENNIS = COURT_PRESETS['tennis-doubles']
@@ -73,11 +74,17 @@ export const LANDMARK_SETS: Record<CourtPreset, LandmarkSet[]> = {
     { id: 'service', label: 'Service line ends (both halves)', landmarks: ['service-near-left', 'service-near-right', 'service-far-right', 'service-far-left'] },
     { id: 'near-half', label: 'Near half: baseline and service line', landmarks: ['singles-near-left', 'singles-near-right', 'service-near-right', 'service-near-left'] },
     { id: 'far-half', label: 'Far half: service line and baseline', landmarks: ['service-far-left', 'service-far-right', 'singles-far-right', 'singles-far-left'] },
+    { id: 'three-far-right', label: '3 corners, phone level: near left, near right, far right', landmarks: ['doubles-near-left', 'doubles-near-right', 'doubles-far-right'] },
+    { id: 'three-far-left', label: '3 corners, phone level: near left, near right, far left', landmarks: ['doubles-near-left', 'doubles-near-right', 'doubles-far-left'] },
+    { id: 'three-left-side', label: '3 corners, phone level: near left, far left, far right', landmarks: ['doubles-near-left', 'doubles-far-left', 'doubles-far-right'] },
+    { id: 'three-right-side', label: '3 corners, phone level: near right, far right, far left', landmarks: ['doubles-near-right', 'doubles-far-right', 'doubles-far-left'] },
   ],
   'cricket-pitch': [
     { id: 'pitch', label: 'Pitch corners', landmarks: ['pitch-near-left', 'pitch-near-right', 'pitch-far-right', 'pitch-far-left'] },
     { id: 'bowling', label: 'Bowling and return creases', landmarks: ['bowling-near-left', 'bowling-near-right', 'bowling-far-right', 'bowling-far-left'] },
     { id: 'popping', label: 'Popping and return creases', landmarks: ['popping-near-left', 'popping-near-right', 'popping-far-right', 'popping-far-left'] },
+    { id: 'three-far-right', label: '3 corners, phone level: near left, near right, far right', landmarks: ['pitch-near-left', 'pitch-near-right', 'pitch-far-right'] },
+    { id: 'three-far-left', label: '3 corners, phone level: near left, near right, far left', landmarks: ['pitch-near-left', 'pitch-near-right', 'pitch-far-left'] },
   ],
 }
 
@@ -146,17 +153,44 @@ export function courtArea(preset: CourtPreset, id?: string) {
   return areas.find((area) => area.id === id) ?? areas[0]!
 }
 
+const triangleArea = (p: CourtPoint, q: CourtPoint, r: CourtPoint) =>
+  Math.abs((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)) / 2
+
+function smallestTriangle(points: CourtPoint[]) {
+  let smallest = Number.POSITIVE_INFINITY
+  for (let i = 0; i < points.length; i += 1) {
+    for (let j = i + 1; j < points.length; j += 1) {
+      for (let k = j + 1; k < points.length; k += 1) smallest = Math.min(smallest, triangleArea(points[i]!, points[j]!, points[k]!))
+    }
+  }
+  return smallest
+}
+
 // Four points fix the ground plane only when they are distinct and no three lie on one line.
-export function landmarksProblem(preset: CourtPreset, ids: string[]): string | null {
-  if (ids.length !== 4) return 'Pick four court points.'
-  if (new Set(ids).size !== 4) return 'Pick four different court points.'
+// Three points do too when the phone is held level.
+export function landmarksProblem(preset: CourtPreset, ids: string[], allowThree = false): string | null {
+  if (ids.length !== 4 && !(allowThree && ids.length === 3)) return allowThree ? 'Pick three or four court points.' : 'Pick four court points.'
+  if (new Set(ids).size !== ids.length) return 'Pick different court points.'
   const points = ids.map((id) => landmarkById(preset, id))
   if (points.some((point) => !point)) return 'One of the court points is not on this court.'
-  const [a, b, c, d] = points as [CourtLandmark, CourtLandmark, CourtLandmark, CourtLandmark]
-  const area = (p: CourtPoint, q: CourtPoint, r: CourtPoint) => Math.abs((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)) / 2
-  const smallest = Math.min(area(a, b, c), area(a, b, d), area(a, c, d), area(b, c, d))
-  if (smallest < 0.5) return 'Three of these points lie on one line. Pick points that span the court.'
+  if (smallestTriangle(points as CourtLandmark[]) < 0.5) return 'Three of these points lie on one line. Pick points that span the court.'
   return null
+}
+
+// The court point that, with the three given, spreads widest: usually the missing corner.
+export function completingLandmark(preset: CourtPreset, ids: string[]) {
+  const chosen = ids.map((id) => landmarkById(preset, id)!)
+  let best: CourtLandmark | null = null
+  let bestArea = 0
+  for (const candidate of COURT_LANDMARKS[preset]) {
+    if (ids.includes(candidate.id)) continue
+    const area = smallestTriangle([...chosen, candidate])
+    if (area > bestArea) {
+      best = candidate
+      bestArea = area
+    }
+  }
+  return best
 }
 
 export function courtWorldPoints(court: Pick<CourtCalibration, 'preset' | 'landmarks'>): CourtPoint[] {

@@ -96,6 +96,11 @@ describe('sessions and media', () => {
     const inLine = { ...court, landmarks: ['doubles-near-left', 'center-mark-near', 'doubles-near-right', 'tee-far'] }
     assert.equal((await call('PUT', `/api/sessions/${session.id}/court`, inLine)).status, 400)
     assert.equal((await call('PUT', `/api/sessions/${session.id}/court`, { ...court, callArea: 'pitch' })).status, 400)
+    const estimated = { ...court, estimatedPoints: 1, imagePoints: [...court.imagePoints.slice(0, 3), { x: -900, y: 40 }] }
+    const withEstimate = await json<SessionDetail>(call('PUT', `/api/sessions/${session.id}/court`, estimated))
+    assert.equal(withEstimate.body.courts[0]!.estimatedPoints, 1, 'an estimated corner may lie outside the photo')
+    const clickedOutside = { ...court, imagePoints: [{ x: -900, y: 40 }, ...court.imagePoints.slice(1)] }
+    assert.equal((await call('PUT', `/api/sessions/${session.id}/court`, clickedOutside)).status, 400)
     await call('PUT', `/api/sessions/${session.id}/court`, court)
     const track = { assetId, modelId: 'yolov8n-coco-onnx', sourceWidth: 640, sourceHeight: 360, sampleFps: 10, duration: 1, createdAt: 1, points: [{ t: 0, x: 1, y: 2, radius: 3, score: 0.5, bounce: true }], live: true }
     const withTrack = await json<SessionDetail>(call('PUT', `/api/assets/${assetId}/ball-track`, track))
@@ -108,10 +113,21 @@ describe('sessions and media', () => {
     assert.equal(saved.body.ballTracks[0]!.points.length, BALL_TRACK_LIMIT)
     assert.equal((await call('PUT', `/api/assets/${assetId}/ball-track`, { ...longTrack, points: [...long, long[0]] })).status, 400)
 
+    const person = { box: { x: 10, y: 20, width: 50, height: 120 }, score: 0.9, keypoints: Array.from({ length: 51 }, (_, index) => (index % 3 === 2 ? 0.8 : 40)), player: 'near' }
+    const poseTrack = { assetId, modelId: 'yolov8n-pose-onnx', sourceWidth: 640, sourceHeight: 360, sampleFps: 10, duration: 1, createdAt: 1, frames: [{ t: 0, people: [person] }] }
+    const withPose = await json<SessionDetail>(call('PUT', `/api/assets/${assetId}/pose-track`, poseTrack))
+    assert.equal(withPose.status, 200)
+    assert.equal(withPose.body.poseTracks[0]!.frames[0]!.people[0]!.player, 'near')
+    const badPlayer = { ...poseTrack, frames: [{ t: 0, people: [{ ...person, player: 'umpire' }] }] }
+    assert.equal((await call('PUT', `/api/assets/${assetId}/pose-track`, badPlayer)).status, 400)
+    const shortKeypoints = { ...poseTrack, frames: [{ t: 0, people: [{ ...person, keypoints: [1, 2, 0.5] }] }] }
+    assert.equal((await call('PUT', `/api/assets/${assetId}/pose-track`, shortKeypoints)).status, 400)
+
     assert.equal((await call('DELETE', `/api/assets/${assetId}`)).status, 200)
     const after = await json<SessionDetail>(fetch(`${server.base}/api/sessions/${session.id}`, withKey()))
     assert.equal(after.body.assets.length, 0)
     assert.equal(after.body.ballTracks.length, 0, 'the track goes with its video')
+    assert.equal(after.body.poseTracks.length, 0, 'the player track goes with its video')
     assert.equal((await fetch(`${server.base}/api/sessions/${uuid()}`, withKey())).status, 404)
   })
 

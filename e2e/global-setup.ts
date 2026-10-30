@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, openSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, writeFileSync, writeSync } from 'node:fs'
 import { projectPoint } from '../src/vision/flight.ts'
 import { behind, L, truth, W } from '../tests/helpers/scene.ts'
 
@@ -64,7 +64,15 @@ function writeCourtClip(path: string) {
   closeSync(file)
 }
 
-export default function globalSetup() {
+// A street photo with four people, from the Ultralytics repository, for the multi-person pose test.
+const PEOPLE_PHOTO = 'https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/assets/bus.jpg'
+
+export default async function globalSetup() {
   mkdirSync('e2e/.cache', { recursive: true })
   if (!existsSync('e2e/.cache/court.y4m')) writeCourtClip('e2e/.cache/court.y4m')
+  if (!existsSync('e2e/.cache/bus.jpg')) {
+    const response = await fetch(PEOPLE_PHOTO)
+    if (!response.ok) throw new Error(`The people photo could not be downloaded: ${response.status}`)
+    writeFileSync('e2e/.cache/bus.jpg', Buffer.from(await response.arrayBuffer()))
+  }
 }

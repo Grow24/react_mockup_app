@@ -6,6 +6,9 @@ import { courtFitsTrack } from '../vision/ball'
 import { airFor, readAirChoice } from '../vision/air'
 import { airText, predictFlight, type Prediction } from '../vision/physics'
 import { AirSelect } from './AirSelect'
+import { length, speed, useUnits } from '../units'
+import { cameraText } from '../vision/cameraPose'
+import { cameraFromCourt } from '../vision/flight'
 import { ballisticEnd, triangulateTake, type TakeView, type TriangulatedPoint } from '../vision/triangulate'
 import { describeSpot, PREDICT_SECONDS, predictionText, type PathSample } from '../vision/flightText'
 import { FlightView } from './BallFlight'
@@ -80,6 +83,7 @@ export function TakePanel({
   const cameraSpots = useMemo(() => result?.cameras.map((camera) => camera.position) ?? [], [result])
   const preset = views[0]?.court.preset ?? 'tennis-doubles'
   const callArea = views[0]?.court.callArea
+  const units = useUnits()
   const [airId, setAirId] = useState(() => readAirChoice(preset))
   const air = airFor(preset, airId)
   const [predicted, setPredicted] = useState<{ from: NonNullable<typeof end>; air: typeof air; prediction: Prediction } | null>(null)
@@ -108,11 +112,15 @@ export function TakePanel({
           : `${videos.length} cameras recorded this take at the same server time. With the ball tracked and the court marked on each, their views are intersected into real 3D positions.`}
       </p>
       <ul className="label-list">
-        {rows.map((row) => (
-          <li key={row.video.id}>
-            {row.name}: {row.missing.length === 0 ? 'ready' : `still needs to ${row.missing.join(', ')}`}
-          </li>
-        ))}
+        {rows.map((row) => {
+          const placed = row.court ? cameraFromCourt(row.court) : null
+          return (
+            <li key={row.video.id}>
+              {row.name}: {row.missing.length === 0 ? 'ready' : `still needs to ${row.missing.join(', ')}`}
+              {placed ? ` · ${cameraText(placed, units)}` : ''}
+            </li>
+          )
+        })}
       </ul>
       {views.length >= 2 && !result ? (
         <p className="warn" role="alert">
@@ -129,7 +137,7 @@ export function TakePanel({
         <>
           <p className="muted">
             {result.points.length} 3D points · cameras agree within {result.medianErrorPx.toFixed(1)} px · peak{' '}
-            {result.peak.toFixed(1)} m · top speed {(result.topSpeed * 3.6).toFixed(0)} km/h
+            {length(result.peak, units)} · top speed {speed(result.topSpeed, units)}
           </p>
           <ul className="label-list">
             {result.cameras.slice(1).map((camera) => (
@@ -140,7 +148,7 @@ export function TakePanel({
             ))}
             {result.bounces.map((bounce, index) => (
               <li key={bounce.t}>
-                Bounce {index + 1} at {bounce.t.toFixed(2)} s: {describeSpot(preset, bounce.p, callArea)}
+                Bounce {index + 1} at {bounce.t.toFixed(2)} s: {describeSpot(preset, bounce.p, callArea, units)}
               </li>
             ))}
           </ul>
@@ -153,7 +161,7 @@ export function TakePanel({
             cameras={cameraSpots}
           />
           <AirSelect preset={preset} value={airId} onChange={setAirId} />
-          {prediction ? <p className="note">{predictionText(preset, prediction, callArea)}</p> : null}
+          {prediction ? <p className="note">{predictionText(preset, prediction, callArea, units)}</p> : null}
           <p className="muted">
             Gold is where the cameras saw the ball, teal is the Rapier prediction after the take, and the white
             dots are the cameras. {airText(air)}

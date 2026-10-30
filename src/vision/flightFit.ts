@@ -33,3 +33,21 @@ export function fitFlightsInWorker(track: BallTrack, court: CourtCalibration) {
     ensureWorker().postMessage({ id, track, court })
   })
 }
+
+const shared = new WeakMap<BallTrack, WeakMap<CourtCalibration, Promise<FlightFit | null>>>()
+
+// The video overlay and the 3D panel ask for the same fit; it runs once per track and court.
+export function sharedFlightFit(track: BallTrack, court: CourtCalibration) {
+  let byCourt = shared.get(track)
+  if (!byCourt) {
+    byCourt = new WeakMap()
+    shared.set(track, byCourt)
+  }
+  let pending = byCourt.get(court)
+  if (!pending) {
+    pending = fitFlightsInWorker(track, court)
+    pending.catch(() => byCourt.delete(court))
+    byCourt.set(court, pending)
+  }
+  return pending
+}

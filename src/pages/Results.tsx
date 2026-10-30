@@ -4,6 +4,7 @@ import { jpegFromVideo } from '../camera/webcodecs'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import { BallOverlay, BallPanel } from '../components/BallTracking'
 import { CourtPlane } from '../components/CourtPlane'
+import { PlayersPanel, PoseOverlay } from '../components/PlayersPanel'
 import { SkeletonView } from '../components/SkeletonView'
 import { TakePanel } from '../components/TakePanel'
 import { formatPercent, formatPerformance, formatWhen } from '../format'
@@ -27,10 +28,12 @@ export function Results() {
     backend,
     courts,
     ballTracks,
+    poseTracks,
     addAsset,
     removeAsset,
     setCourt,
     setBallTrack,
+    setPoseTrack,
   } = useSession()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [frameReady, setFrameReady] = useState(false)
@@ -41,6 +44,7 @@ export function Results() {
   const poseFrameRef = useRef<HTMLDivElement | null>(null)
   const selected = assets.find((asset) => asset.id === selectedId) ?? assets[0]
   const ballTrack = selected?.kind === 'video' ? (ballTracks[selected.id] ?? null) : null
+  const poseTrack = selected?.kind === 'video' ? (poseTracks[selected.id] ?? null) : null
   const court = selected ? courtFor(courts, selected.deviceId) : null
 
   useEffect(() => {
@@ -165,7 +169,8 @@ export function Results() {
                       playsInline
                       onLoadedData={() => setFrameReady(true)}
                     />
-                    {ballTrack ? <BallOverlay videoRef={videoRef} track={ballTrack} /> : null}
+                    {poseTrack ? <PoseOverlay videoRef={videoRef} track={poseTrack} court={court} /> : null}
+                    {ballTrack ? <BallOverlay videoRef={videoRef} track={ballTrack} court={court} /> : null}
                   </div>
                   <button
                     type="button"
@@ -202,6 +207,19 @@ export function Results() {
                 court={court}
                 onSave={(track) => setBallTrack(selected.id, track)}
                 onClear={() => setBallTrack(selected.id, null)}
+              />
+            ) : null}
+
+            {selected.kind === 'video' ? (
+              <PlayersPanel
+                key={`players-${selected.id}`}
+                assetId={selected.id}
+                url={selected.url}
+                videoRef={videoRef}
+                track={poseTrack}
+                court={court}
+                onSave={(track) => setPoseTrack(selected.id, track)}
+                onClear={() => setPoseTrack(selected.id, null)}
               />
             ) : null}
 

@@ -6,7 +6,7 @@ import {
   type CourtCalibration,
 } from '../../shared/contracts.ts'
 import { candidatesFrom, courtFitsTrack, linkBallTrack, type BallFrame } from './ball'
-import { flightBounces, groundFromImage, lineCall, projectPoint } from './flight'
+import { flightAt, flightBounces, groundFromImage, lineCall, positionAt, projectPoint, type FlightFit, type Vec3 } from './flight'
 import { fitFlightsInWorker } from './flightFit'
 import type { DetectorModel } from './models'
 import { detectSource, onnxBackend, prepareOnnx, type OnnxBackend } from './onnxDetector'
@@ -17,6 +17,8 @@ const FIT_EVERY_SECONDS = 0.5
 const SAME_BOUNCE_SECONDS = 0.25
 const SHOW_BOUNCES = 6
 const MIN_SCORE = 0.15
+// The latest fit covers the window up to half a second ago; the newest ball is carried on its arc this far.
+const CARRY_SECONDS = 0.6
 
 export type LiveBounce = {
   t: number
@@ -32,6 +34,8 @@ export type LiveBallView = {
   height: number
   points: BallPoint[]
   bounces: LiveBounce[]
+  // The newest ball's court coordinates from the last 3D fit, with where it sits in the preview.
+  ballNow: { p: Vec3; image: { x: number; y: number } } | null
 }
 
 export type LiveBallStatus = 'off' | 'loading' | 'live' | 'error'
@@ -83,6 +87,7 @@ export function useLiveBall(
   const fpsRef = useRef(0)
   const courtRef = useRef(court)
   const modelRef = useRef(model)
+  const fitRef = useRef<{ from: number; fit: FlightFit; court: CourtCalibration } | null>(null)
 
   useEffect(() => {
     courtRef.current = court
@@ -97,6 +102,7 @@ export function useLiveBall(
     const stamps: number[] = []
     framesRef.current = []
     bouncesRef.current = []
+    fitRef.current = null
 
     const remember = (bounce: LiveBounce) => {
       const list = bouncesRef.current
@@ -130,6 +136,7 @@ export function useLiveBall(
       fitFlightsInWorker(track, current)
         .then((fit) => {
           if (!active || !fit) return
+          fitRef.current = { from, fit, court: current }
           const settledFrom = from + SAME_BOUNCE_SECONDS
           const settledTo = from + track.duration - SAME_BOUNCE_SECONDS
           bouncesRef.current = bouncesRef.current.filter(
@@ -152,6 +159,19 @@ export function useLiveBall(
         .finally(() => {
           fitting = false
         })
+    }
+
+    const carried = (latest: BallPoint | undefined, width: number, height: number) => {
+      const last = fitRef.current
+      if (!latest || !last || last.court !== courtRef.current) return null
+      const t = latest.t - last.from
+      const flight = flightAt(last.fit, t) ?? last.fit.flights.find((item) => item.reliable && t > item.to && t <= item.to + CARRY_SECONDS)
+      if (!flight) return null
+      const p = positionAt(flight, t)
+      if (p.z < -0.2) return null
+      const image = projectPoint(last.fit.camera, p)
+      if (!image) return null
+      return { p, image: { x: (image.x * width) / last.court.sourceWidth, y: (image.y * height) / last.court.sourceHeight } }
     }
 
     const loop = async () => {
@@ -225,6 +245,7 @@ export function useLiveBall(
           height,
           points,
           bounces: bouncesRef.current.slice(-SHOW_BOUNCES),
+          ballNow: carried(points.at(-1), width, height),
         })
       }
     }

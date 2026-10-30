@@ -6,6 +6,13 @@ import { BallModelSelect } from './BallModelSelect'
 import { useBallModel } from '../vision/useBallModel'
 import { courtFitsTrack, groundPoints, pointAt, trailAt } from '../vision/ball'
 import { BALL_FPS_CHOICES, BALL_SAMPLE_FPS, trackBall } from '../vision/ballTracker'
+import { courtMeters, courtPixelSize, mapPixel } from '../vision/court'
+import { drawCourtOverlay } from '../vision/courtOverlay'
+import { flightAt, lineCall, positionAt, projectPoint, type FlightFit } from '../vision/flight'
+import { sharedFlightFit } from '../vision/flightFit'
+import { frameRect } from '../vision/draw'
+import { projectToCourt } from '../vision/opencv'
+import { length, useUnits, xyz, type Units } from '../units'
 
 const FPS_KEY = 'pbmp-ball-fps'
 
@@ -17,26 +24,47 @@ function readFps() {
     return BALL_SAMPLE_FPS
   }
 }
-import { courtMeters, courtPixelSize, mapPixel } from '../vision/court'
-import { lineCall } from '../vision/flight'
-import { frameRect } from '../vision/draw'
-import { projectToCourt } from '../vision/opencv'
 
 const GAP_SECONDS = 0.4
 const MAP_PAD = 16
 
-export function BallOverlay({ videoRef, track }: { videoRef: RefObject<HTMLVideoElement | null>; track: BallTrack }) {
+export function BallOverlay({
+  videoRef,
+  track,
+  court,
+}: {
+  videoRef: RefObject<HTMLVideoElement | null>
+  track: BallTrack
+  court: CourtCalibration | null
+}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const units = useUnits()
+  const usable = court && courtFitsTrack(track, court) ? court : null
+  const [fit, setFit] = useState<{ court: CourtCalibration; fit: FlightFit | null } | null>(null)
+
+  useEffect(() => {
+    if (!usable) return
+    let current = true
+    sharedFlightFit(track, usable)
+      .then((next) => {
+        if (current) setFit({ court: usable, fit: next })
+      })
+      .catch((caught) => console.error(caught))
+    return () => {
+      current = false
+    }
+  }, [track, usable])
 
   useEffect(() => {
     let frame = 0
     let drawn = ''
+    const fitted = fit && fit.court === usable ? fit.fit : null
     const draw = () => {
       frame = requestAnimationFrame(draw)
       const video = videoRef.current
       const canvas = canvasRef.current
       if (!video || !canvas) return
-      const key = `${video.clientWidth}x${video.clientHeight}@${video.currentTime}`
+      const key = `${video.clientWidth}x${video.clientHeight}@${video.currentTime}:${units}`
       if (key === drawn) return
       drawn = key
       const bounds = frameRect(video.clientWidth, video.clientHeight, track.sourceWidth, track.sourceHeight)
@@ -52,6 +80,7 @@ export function BallOverlay({ videoRef, track }: { videoRef: RefObject<HTMLVideo
       context.setTransform(dpr, 0, 0, dpr, 0, 0)
       const sx = bounds.width / track.sourceWidth
       const sy = bounds.height / track.sourceHeight
+      if (usable) drawCourtOverlay(context, usable, bounds.width / usable.sourceWidth, bounds.height / usable.sourceHeight)
       const trail = trailAt(track.points, video.currentTime)
       context.lineWidth = 3
       context.lineCap = 'round'
@@ -79,12 +108,56 @@ export function BallOverlay({ videoRef, track }: { videoRef: RefObject<HTMLVideo
         context.arc(current.x * sx, current.y * sy, Math.max(7, current.radius * sx + 4), 0, Math.PI * 2)
         context.stroke()
       }
+      if (usable && fitted) drawHeight(context, usable, fitted, video.currentTime, bounds.width, bounds.height, units)
     }
     frame = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(frame)
-  }, [videoRef, track])
+  }, [videoRef, track, usable, fit, units])
 
   return <canvas ref={canvasRef} className="annotation" aria-hidden="true" />
+}
+
+// The ball's fitted 3D spot, a line down to its shadow on the court, and its court coordinates.
+function drawHeight(
+  context: CanvasRenderingContext2D,
+  court: CourtCalibration,
+  fit: FlightFit,
+  t: number,
+  width: number,
+  height: number,
+  units: Units,
+) {
+  const flight = flightAt(fit, t)
+  if (!flight) return
+  const p = positionAt(flight, Math.min(flight.to, Math.max(flight.from, t)))
+  const ball = projectPoint(fit.camera, p)
+  const shadow = projectPoint(fit.camera, { x: p.x, y: p.y, z: 0 })
+  if (!ball || !shadow) return
+  const kx = width / court.sourceWidth
+  const ky = height / court.sourceHeight
+  context.save()
+  context.setLineDash([4, 4])
+  context.strokeStyle = 'rgba(255, 253, 249, 0.8)'
+  context.lineWidth = 1.5
+  context.beginPath()
+  context.moveTo(ball.x * kx, ball.y * ky)
+  context.lineTo(shadow.x * kx, shadow.y * ky)
+  context.stroke()
+  context.setLineDash([])
+  context.fillStyle = 'rgba(22, 19, 16, 0.55)'
+  context.beginPath()
+  context.ellipse(shadow.x * kx, shadow.y * ky, 6, 3, 0, 0, Math.PI * 2)
+  context.fill()
+  const label = xyz(p, units)
+  context.font = '700 12px "Avenir Next", "Segoe UI", sans-serif'
+  const textWidth = context.measureText(label).width
+  const x = Math.min(width - textWidth - 6, Math.max(4, ball.x * kx + 12))
+  const y = Math.max(16, ball.y * ky - 10)
+  context.fillStyle = 'rgba(22, 19, 16, 0.75)'
+  context.fillRect(x - 4, y - 13, textWidth + 8, 18)
+  context.fillStyle = '#f3d38a'
+  context.fillText(label, x, y)
+  context.restore()
 }
 
 function insideMap(point: CourtPoint, width: number, height: number) {
@@ -164,6 +237,7 @@ function drawCourtMap(
 
 function BallCourtMap({ track, court }: { track: BallTrack; court: CourtCalibration }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const units = useUnits()
   const [lines, setLines] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
 
@@ -181,7 +255,7 @@ function BallCourtMap({ track, court }: { track: BallTrack; court: CourtCalibrat
           const meters = courtMeters(court.preset, flat[index]!)
           const call = lineCall(court.preset, { x: meters.fromLeft, y: meters.fromNear }, court.callArea)
           next.push(
-            `Bounce ${next.length + 1} at ${point.t.toFixed(1)} s: ${call.toUpperCase()} · ${meters.fromLeft.toFixed(1)} m from the left line, ${meters.fromNear.toFixed(1)} m from the near line`,
+            `Bounce ${next.length + 1} at ${point.t.toFixed(1)} s: ${call.toUpperCase()} · ${length(meters.fromLeft, units)} from the left line, ${length(meters.fromNear, units)} from the near line`,
           )
         })
         setLines(next)
@@ -195,7 +269,7 @@ function BallCourtMap({ track, court }: { track: BallTrack; court: CourtCalibrat
     return () => {
       current = false
     }
-  }, [track, court])
+  }, [track, court, units])
 
   return (
     <div className="still-pose">
@@ -410,7 +484,7 @@ export function BallPanel({
           ) : (
             <>
               <BallCourtMap track={track} court={court} />
-              <BallFlight track={track} court={court} />
+              <BallFlight track={track} court={court} videoRef={videoRef} />
             </>
           )}
         </>

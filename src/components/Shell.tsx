@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { useState, type ReactNode } from 'react'
 import { shareLink } from '../session/api'
 import { useSession } from '../session/context'
+import { setUnits, useUnits, type Units } from '../units'
 
 const TABS = [
   { to: '/', label: 'Camera', end: true },
@@ -63,6 +64,19 @@ function SessionLine() {
   )
 }
 
+function UnitsSwitch() {
+  const units = useUnits()
+  return (
+    <label className="units-switch">
+      <span>Units</span>
+      <select value={units} onChange={(event) => setUnits(event.target.value as Units)}>
+        <option value="m">Meters</option>
+        <option value="ft">Feet</option>
+      </select>
+    </label>
+  )
+}
+
 export function Shell({ children }: { children: ReactNode }) {
   const { assets } = useSession()
 
@@ -88,6 +102,7 @@ export function Shell({ children }: { children: ReactNode }) {
               ) : null}
             </NavLink>
           ))}
+          <UnitsSwitch />
         </nav>
       </header>
       <main className="main">{children}</main>

@@ -12,7 +12,9 @@ import {
   type Vec3,
 } from '../../src/vision/flight.ts'
 import { NO_AIR, predictFlight } from '../../src/vision/physics.ts'
-import { LANDMARK_SETS, landmarksProblem } from '../../shared/court.ts'
+import { completingLandmark, LANDMARK_SETS, landmarksProblem } from '../../shared/court.ts'
+import { courtImageLines, describeCamera, levelCamera } from '../../src/vision/cameraPose.ts'
+import { length, xyz } from '../../src/units.ts'
 import { ballisticEnd, triangulateTake, type TakeView } from '../../src/vision/triangulate.ts'
 import { behind, corner, courtFor, L, lookAtCamera, noise, R, trackOf, truth, W } from '../helpers/scene.ts'
 
@@ -131,6 +133,45 @@ describe('single-camera 3D flight', () => {
       if (bounce && Math.hypot(bounce.p.x - at(tb).x, bounce.p.y - at(tb).y) < 0.5) found += 1
     }
     assert.ok(found >= 7, `${found} of 8 far bounces found`)
+  })
+
+  it('places a level camera from three corners and finds the fourth, even outside the frame', () => {
+    const high = lookAtCamera({ x: W + 3, y: -3.05, z: 4.57 }, { x: W / 2, y: L / 2, z: 0 }, 900, 1280, 720)
+    const corners = [
+      { x: 0, y: 0 },
+      { x: W, y: 0 },
+      { x: W, y: L },
+      { x: 0, y: L },
+    ]
+    for (const [camera, width, height] of [
+      [behind, 640, 360],
+      [high, 1280, 720],
+    ] as const) {
+      for (let missing = 0; missing < 4; missing += 1) {
+        const world = corners.filter((_, index) => index !== missing)
+        const image = world.map((point) => projectPoint(camera, { ...point, z: 0 })!)
+        const fit = levelCamera(world, image, width, height)!
+        const off = Math.hypot(fit.camera.position.x - camera.position.x, fit.camera.position.y - camera.position.y, fit.camera.position.z - camera.position.z)
+        assert.ok(off < 0.05, `camera ${off.toFixed(2)} m off without corner ${missing}`)
+        const truth4 = projectPoint(camera, { ...corners[missing]!, z: 0 })!
+        const found = projectPoint(fit.camera, { ...corners[missing]!, z: 0 })!
+        assert.ok(Math.hypot(truth4.x - found.x, truth4.y - found.y) < 1, 'the estimated corner')
+      }
+    }
+    const pose = describeCamera(high)
+    assert.ok(Math.abs(pose.roll) < 1e-6 && pose.pitch > 5 && pose.pitch < 30 && pose.yaw < 0)
+    assert.equal(landmarksProblem('tennis-doubles', ['doubles-near-left', 'doubles-near-right', 'doubles-far-right'], true), null)
+    assert.equal(completingLandmark('tennis-doubles', ['doubles-near-left', 'doubles-near-right', 'doubles-far-right'])!.id, 'doubles-far-left')
+  })
+
+  it('draws court lines past the edge of the frame and shows coordinates in feet', () => {
+    const close = lookAtCamera({ x: W / 2, y: -2, z: 2 }, { x: W / 2, y: 8, z: 0 }, 500, 640, 360)
+    const lines = courtImageLines(courtFor(close, 640, 360))
+    const points = lines.flat()
+    assert.ok(points.some((point) => point.x < 0 || point.x > 640), 'some lines run out of the frame')
+    assert.ok(points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)))
+    assert.equal(length(3.048, 'ft'), '10.0 ft')
+    assert.equal(xyz({ x: 0, y: 0, z: 4.572 }, 'ft'), 'x 0.0 · y 0.0 · z 15.0 ft')
   })
 
   it('maps image points back to court meters and calls lines', () => {

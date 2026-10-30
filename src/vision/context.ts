@@ -6,11 +6,15 @@ import type { ObjectDetectorId } from './yolo'
 
 export type AiStatus = 'off' | 'loading' | 'ready' | 'error'
 
+// One person with a 3D pose from MediaPipe, or every person and the players named from YOLOv8n-pose.
+export type PoseMode = 'single' | 'people'
+
 export type AiValue = {
   enabled: boolean
   confidence: number
   objectDetector: ObjectDetectorId
   objectModel: DetectorModel | null
+  poseMode: PoseMode
   status: AiStatus
   error: string | null
   delegate: DelegateName | null
@@ -19,6 +23,7 @@ export type AiValue = {
   setEnabled: (enabled: boolean) => void
   setConfidence: (confidence: number) => void
   setObjectDetector: (detector: ObjectDetectorId) => void
+  setPoseMode: (mode: PoseMode) => void
   retry: () => void
   publish: (snapshot: AiSnapshot) => void
   readSnapshot: () => AiSnapshot | null

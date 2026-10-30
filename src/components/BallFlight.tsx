@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { COURT_PRESETS, type BallTrack, type CourtCalibration, type CourtPreset } from '../../shared/contracts.ts'
 import { courtArea, courtLines } from '../../shared/court.ts'
-import { flightBounces, peakHeight, positionAt, velocityAt, type Flight, type FlightFit, type Vec3 } from '../vision/flight'
-import { fitFlightsInWorker } from '../vision/flightFit'
+import { flightAt, flightBounces, peakHeight, positionAt, velocityAt, type Flight, type FlightFit, type Vec3 } from '../vision/flight'
+import { sharedFlightFit } from '../vision/flightFit'
+import { cameraText } from '../vision/cameraPose'
+import { length, speed, useUnits, xyz } from '../units'
 import { flightPaths, PREDICT_SECONDS, predictionText, describeSpot, type PathSample } from '../vision/flightText'
 import { airFor, readAirChoice } from '../vision/air'
 import { airText, predictFlight, type Air, type Prediction } from '../vision/physics'
@@ -19,6 +21,7 @@ export function FlightView({
   bounces,
   prediction,
   cameras,
+  clock,
 }: {
   preset: CourtPreset
   callArea?: string
@@ -26,6 +29,8 @@ export function FlightView({
   bounces: Vec3[]
   prediction: Prediction | null
   cameras: Vec3[]
+  // When it returns a time, the ball follows it (a playing video) instead of looping on its own.
+  clock?: () => number | null
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
 
@@ -180,12 +185,14 @@ export function FlightView({
     observer.observe(host)
     resize()
 
-    const clock = new THREE.Clock()
+    const timer = new THREE.Timer()
+    timer.connect(document)
     let frame = 0
-    const loop = () => {
+    const loop = (now?: number) => {
       frame = requestAnimationFrame(loop)
+      timer.update(now)
       const span = end - start + PAUSE_SECONDS
-      const t = start + (clock.getElapsedTime() % span)
+      const t = clock?.() ?? start + (timer.getElapsed() % span)
       const at = ballAt(t)
       ball.visible = at !== null
       if (at) ball.position.copy(place(at))
@@ -196,13 +203,14 @@ export function FlightView({
 
     return () => {
       cancelAnimationFrame(frame)
+      timer.dispose()
       observer.disconnect()
       controls.dispose()
       for (const item of disposables) item.dispose()
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [preset, callArea, paths, bounces, prediction, cameras])
+  }, [preset, callArea, paths, bounces, prediction, cameras, clock])
 
   return (
     <div
@@ -215,7 +223,27 @@ export function FlightView({
   )
 }
 
-export function BallFlight({ track, court }: { track: BallTrack; court: CourtCalibration }) {
+export function BallFlight({
+  track,
+  court,
+  videoRef,
+}: {
+  track: BallTrack
+  court: CourtCalibration
+  videoRef?: RefObject<HTMLVideoElement | null>
+}) {
+  const units = useUnits()
+  const readoutRef = useRef<HTMLParagraphElement | null>(null)
+  const clock = useMemo(
+    () =>
+      videoRef
+        ? () => {
+            const video = videoRef.current
+            return video && !video.paused ? video.currentTime : null
+          }
+        : undefined,
+    [videoRef],
+  )
   const [fitted, setFitted] = useState<{ track: BallTrack; court: CourtCalibration; fit: FlightFit | null } | null>(
     null,
   )
@@ -232,7 +260,7 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
 
   useEffect(() => {
     let current = true
-    fitFlightsInWorker(track, court)
+    sharedFlightFit(track, court)
       .then((next) => {
         if (current) setFitted({ track, court, fit: next })
       })
@@ -265,6 +293,29 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
     }
   }, [court.preset, last, air])
 
+  // The ball's court coordinates at the video's time, written straight to the page every frame.
+  useEffect(() => {
+    if (!fit || !videoRef) return
+    let frame = 0
+    let shown = ''
+    const tick = () => {
+      frame = requestAnimationFrame(tick)
+      const video = videoRef.current
+      const node = readoutRef.current
+      if (!video || !node) return
+      const flight = flightAt(fit, video.currentTime)
+      const text = flight
+        ? `Ball at ${video.currentTime.toFixed(2)} s: ${xyz(positionAt(flight, video.currentTime), units)}`
+        : `At ${video.currentTime.toFixed(2)} s the ball is not in a drawn flight.`
+      if (text !== shown) {
+        node.textContent = text
+        shown = text
+      }
+    }
+    frame = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frame)
+  }, [fit, videoRef, units])
+
   if (fit === undefined) {
     return error ? (
       <p className="warn" role="alert">
@@ -285,28 +336,27 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
   }
 
   const prediction = predicted && predicted.from === last && predicted.air === air ? predicted.prediction : null
-  const position = fit.camera.position
   return (
     <div className="still-pose">
       <h4>3D flight</h4>
       <p className="muted">
-        Camera placed {position.z.toFixed(1)} m high, {Math.abs(position.y).toFixed(1)} m{' '}
-        {position.y < 0 ? 'behind' : 'past'} the near line
-        {fit.camera.focalEstimated ? '' : ' (focal length guessed, so heights are rough)'}. Each flight
-        between bounces or hits is fitted to gravity, which gives the height one camera cannot see.
+        {cameraText(fit.camera, units)}
+        {fit.camera.focalEstimated ? '' : ' (focal length guessed, so heights are rough)'}. Each flight between
+        bounces or hits is fitted to gravity, which gives the height one camera cannot see.
       </p>
+      {videoRef ? <p ref={readoutRef} className="note" aria-live="off" /> : null}
       <ul className="label-list">
         {fit.flights.map((flight, index) => {
           const v = velocityAt(flight, flight.from)
           return (
             <li key={flight.t0}>
               Flight {index + 1} · {flight.from.toFixed(2)}–{flight.to.toFixed(2)} s · peak{' '}
-              {peakHeight(flight).toFixed(1)} m · {(Math.hypot(v.x, v.y, v.z) * 3.6).toFixed(0)} km/h · fit{' '}
+              {length(peakHeight(flight), units)} · {speed(Math.hypot(v.x, v.y, v.z), units)} · fit{' '}
               {flight.rmsPx.toFixed(1)} px
               {flight.reliable
-                ? ` · height ±${(flight.heightSigma * 100).toFixed(0)} cm`
+                ? ` · height ±${length(flight.heightSigma, units, 2)}`
                 : flight.heightSigma > 0.5 && Number.isFinite(flight.heightSigma)
-                  ? ` (height uncertain by ±${flight.heightSigma.toFixed(1)} m from one camera, not drawn)`
+                  ? ` (height uncertain by ±${length(flight.heightSigma, units)} from one camera, not drawn)`
                   : ' (poor fit, not drawn)'}
             </li>
           )
@@ -319,7 +369,7 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
         ) : null}
         {flightBounces(flights).map((bounce, index) => (
           <li key={bounce.t}>
-            3D bounce {index + 1} at {bounce.t.toFixed(2)} s: {describeSpot(court.preset, bounce.p, court.callArea)}
+            3D bounce {index + 1} at {bounce.t.toFixed(2)} s: {describeSpot(court.preset, bounce.p, court.callArea, units)}
           </li>
         ))}
       </ul>
@@ -332,13 +382,14 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
             bounces={seenBounces}
             prediction={prediction}
             cameras={cameras}
+            clock={clock}
           />
           <AirSelect preset={court.preset} value={airId} onChange={setAirId} />
-          {prediction ? <p className="note">{predictionText(court.preset, prediction, court.callArea)}</p> : null}
+          {prediction ? <p className="note">{predictionText(court.preset, prediction, court.callArea, units)}</p> : null}
           {!prediction && !error ? <p className="muted">Loading Rapier physics.</p> : null}
           <p className="muted">
             Gold is the tracked flight, teal is the Rapier prediction after the video ends, and the white dot
-            is the camera. {airText(air)}
+            is the camera. While the video plays, the 3D ball follows it. {airText(air)}
           </p>
         </>
       ) : (

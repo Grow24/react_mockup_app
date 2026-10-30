@@ -42,6 +42,7 @@ import {
   updateModel,
   type ModelDetails,
   saveBallTrack,
+  savePoseTrack,
   saveCourt,
   saveAsset,
   saveCameras,
@@ -52,6 +53,9 @@ import {
 } from './store.ts'
 import {
   BALL_TRACK_LIMIT,
+  COCO_KEYPOINTS,
+  MAX_PEOPLE,
+  POSE_TRACK_LIMIT,
   MAX_MODEL_BYTES,
   TRAINING_LIMITS,
   WORKOUT_LIMITS,
@@ -60,6 +64,8 @@ import {
   type AiSnapshot,
   type BallPoint,
   type BallTrack,
+  type PersonPose,
+  type PoseTrack,
   type CameraRecord,
   type CourtCalibration,
   type CourtPreset,
@@ -105,6 +111,7 @@ function isUuid(value: string) {
 }
 
 const MAX_BALL_TRACK_JSON = 4_000_000
+const MAX_POSE_TRACK_JSON = 12_000_000
 
 async function readBody(req: IncomingMessage, limit = MAX_JSON) {
   const chunks: Buffer[] = []
@@ -208,15 +215,18 @@ function asCourt(value: unknown): CourtCalibration | undefined {
     return undefined
   }
   if (!Array.isArray(court.imagePoints) || court.imagePoints.length !== 4) return undefined
+  if (court.estimatedPoints != null && court.estimatedPoints !== 0 && court.estimatedPoints !== 1) return undefined
+  const estimated = court.estimatedPoints ?? 0
   const imagePoints = []
-  for (const item of court.imagePoints) {
+  for (const [index, item] of court.imagePoints.entries()) {
     if (!item || typeof item !== 'object') return undefined
     const point = item as Partial<CourtCalibration['imagePoints'][number]>
-    if (typeof point.x !== 'number' || typeof point.y !== 'number') return undefined
-    if (point.x < -50 || point.y < -50 || point.x > court.sourceWidth + 50 || point.y > court.sourceHeight + 50) {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return undefined
+    const margin = index >= 4 - estimated ? 10 * Math.max(court.sourceWidth, court.sourceHeight) : 50
+    if (point.x! < -margin || point.y! < -margin || point.x! > court.sourceWidth + margin || point.y! > court.sourceHeight + margin) {
       return undefined
     }
-    imagePoints.push({ x: point.x, y: point.y })
+    imagePoints.push({ x: point.x!, y: point.y! })
   }
   const next: CourtCalibration = {
     preset: court.preset as CourtPreset,
@@ -234,6 +244,7 @@ function asCourt(value: unknown): CourtCalibration | undefined {
     if (!COURT_AREAS[next.preset].some((area) => area.id === court.callArea)) return undefined
     next.callArea = court.callArea
   }
+  if (estimated) next.estimatedPoints = estimated
   if (court.deviceId != null) {
     if (typeof court.deviceId !== 'string' || !isUuid(court.deviceId)) return undefined
     next.deviceId = court.deviceId
@@ -286,6 +297,77 @@ function asBallTrack(value: unknown, assetId: string): BallTrack | undefined {
   }
 }
 
+const PLAYER = /^(near|far)(-2)?$/
+
+function asPerson(value: unknown, width: number, height: number): PersonPose | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const person = value as Partial<PersonPose>
+  const box = person.box
+  if (!box || typeof box !== 'object') return undefined
+  if (
+    !finiteIn(box.x, -width, width * 2) ||
+    !finiteIn(box.y, -height, height * 2) ||
+    !finiteIn(box.width, 0, width * 2) ||
+    !finiteIn(box.height, 0, height * 2) ||
+    !finiteIn(person.score, 0, 1)
+  ) {
+    return undefined
+  }
+  if (!Array.isArray(person.keypoints) || person.keypoints.length !== COCO_KEYPOINTS.length * 3) return undefined
+  for (let index = 0; index < person.keypoints.length; index += 3) {
+    if (
+      !finiteIn(person.keypoints[index], -width, width * 2) ||
+      !finiteIn(person.keypoints[index + 1], -height, height * 2) ||
+      !finiteIn(person.keypoints[index + 2], 0, 1)
+    ) {
+      return undefined
+    }
+  }
+  const next: PersonPose = {
+    box: { x: box.x, y: box.y, width: box.width, height: box.height },
+    score: person.score,
+    keypoints: person.keypoints.slice(),
+  }
+  if (person.player != null) {
+    if (typeof person.player !== 'string' || !PLAYER.test(person.player)) return undefined
+    next.player = person.player
+  }
+  return next
+}
+
+function asPoseTrack(value: unknown, assetId: string): PoseTrack | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const track = value as Partial<PoseTrack>
+  if (track.assetId !== assetId) return undefined
+  if (typeof track.modelId !== 'string' || !/^[a-z0-9-]{1,80}$/.test(track.modelId)) return undefined
+  if (!finiteIn(track.sourceWidth, 2, 8000) || !finiteIn(track.sourceHeight, 2, 8000)) return undefined
+  if (!finiteIn(track.sampleFps, 1, 60) || !finiteIn(track.duration, 0, 3600)) return undefined
+  if (!finiteIn(track.createdAt, 0, Number.MAX_SAFE_INTEGER)) return undefined
+  if (!Array.isArray(track.frames) || track.frames.length > POSE_TRACK_LIMIT) return undefined
+  const frames: PoseTrack['frames'] = []
+  for (const item of track.frames) {
+    if (!item || typeof item !== 'object' || !finiteIn(item.t, 0, 3600)) return undefined
+    if (!Array.isArray(item.people) || item.people.length > MAX_PEOPLE) return undefined
+    const people: PersonPose[] = []
+    for (const person of item.people) {
+      const parsed = asPerson(person, track.sourceWidth, track.sourceHeight)
+      if (!parsed) return undefined
+      people.push(parsed)
+    }
+    frames.push({ t: item.t, people })
+  }
+  return {
+    assetId,
+    modelId: track.modelId,
+    sourceWidth: track.sourceWidth,
+    sourceHeight: track.sourceHeight,
+    sampleFps: track.sampleFps,
+    duration: track.duration,
+    createdAt: track.createdAt,
+    frames,
+  }
+}
+
 function asPerformance(value: unknown) {
   if (!value || typeof value !== 'object') return undefined
   const sample = value as Partial<NonNullable<AiSnapshot['performance']>>
@@ -327,6 +409,16 @@ function asSnapshot(value: unknown): AiSnapshot | null | undefined {
   }
   if (worldPose && worldPose.length > 0) next.worldPose = worldPose
   if (performance) next.performance = performance
+  if (snapshot.people != null) {
+    if (!Array.isArray(snapshot.people) || snapshot.people.length > MAX_PEOPLE) return undefined
+    const people: PersonPose[] = []
+    for (const person of snapshot.people) {
+      const parsed = asPerson(person, 8000, 8000)
+      if (!parsed) return undefined
+      people.push(parsed)
+    }
+    if (people.length > 0) next.people = people
+  }
   if (typeof snapshot.objectModelId === 'string' && /^[a-z0-9-]{1,80}$/.test(snapshot.objectModelId)) {
     next.objectModelId = snapshot.objectModelId
   }
@@ -1365,6 +1457,41 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       track = parsed
     }
     const session = saveBallTrack(assetId, track)
+    if (!session) {
+      sendJson(res, 404, { error: 'File was not found.' })
+      return
+    }
+    sendJson(res, 200, session)
+    return
+  }
+
+  if (
+    parts[0] === 'api' &&
+    parts[1] === 'assets' &&
+    parts[3] === 'pose-track' &&
+    parts.length === 4 &&
+    (req.method === 'PUT' || req.method === 'DELETE')
+  ) {
+    const assetId = parts[2]!
+    if (!isUuid(assetId)) {
+      sendJson(res, 400, { error: 'Asset id is not valid.' })
+      return
+    }
+    let track: PoseTrack | null = null
+    if (req.method === 'PUT') {
+      const body = await readBody(req, MAX_POSE_TRACK_JSON)
+      if (!body) {
+        sendJson(res, 413, { error: 'Pose track is too large.' })
+        return
+      }
+      const parsed = asPoseTrack(body, assetId)
+      if (!parsed) {
+        sendJson(res, 400, { error: 'Pose track is not valid.' })
+        return
+      }
+      track = parsed
+    }
+    const session = savePoseTrack(assetId, track)
     if (!session) {
       sendJson(res, 404, { error: 'File was not found.' })
       return

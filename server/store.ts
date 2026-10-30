@@ -10,6 +10,7 @@ import {
   type AiModel,
   type AiSnapshot,
   type BallTrack,
+  type PoseTrack,
   type CameraRecord,
   type CourtCalibration,
   type CustomModel,
@@ -70,6 +71,11 @@ const schema = `
     court_json TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS ball_tracks (
+    asset_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    track_json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS pose_tracks (
     asset_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     track_json TEXT NOT NULL
@@ -363,22 +369,25 @@ export function getSession(id: string): SessionDetail | undefined {
     assets: assetsFor(id),
     court: courts[0] ?? null,
     courts,
-    ballTracks: readBallTracks(id),
+    ballTracks: readTracks<BallTrack>('ball_tracks', id),
+    poseTracks: readTracks<PoseTrack>('pose_tracks', id),
     models: modelsFor(id),
   }
 }
 
-function readBallTracks(sessionId: string): BallTrack[] {
+type TrackTable = 'ball_tracks' | 'pose_tracks'
+
+function readTracks<T>(table: TrackTable, sessionId: string): T[] {
   const rows = database()
     .prepare(
-      `SELECT b.track_json FROM ball_tracks b JOIN assets a ON a.id = b.asset_id
+      `SELECT b.track_json FROM ${table} b JOIN assets a ON a.id = b.asset_id
        WHERE b.session_id = ? ORDER BY a.created_at DESC`,
     )
     .all(sessionId) as { track_json: string }[]
-  const tracks: BallTrack[] = []
+  const tracks: T[] = []
   for (const row of rows) {
     try {
-      tracks.push(JSON.parse(row.track_json) as BallTrack)
+      tracks.push(JSON.parse(row.track_json) as T)
     } catch {
       // A broken row is skipped; the video can be tracked again.
     }
@@ -386,22 +395,30 @@ function readBallTracks(sessionId: string): BallTrack[] {
   return tracks
 }
 
-export function saveBallTrack(assetId: string, track: BallTrack | null) {
+function saveTrack(table: TrackTable, assetId: string, track: unknown) {
   const asset = database().prepare('SELECT session_id FROM assets WHERE id = ?').get(assetId) as
     | { session_id: string }
     | undefined
   if (!asset) return undefined
   if (!track) {
-    database().prepare('DELETE FROM ball_tracks WHERE asset_id = ?').run(assetId)
+    database().prepare(`DELETE FROM ${table} WHERE asset_id = ?`).run(assetId)
   } else {
     database()
       .prepare(
-        'INSERT INTO ball_tracks (asset_id, session_id, track_json) VALUES (?, ?, ?) ON CONFLICT(asset_id) DO UPDATE SET track_json = excluded.track_json',
+        `INSERT INTO ${table} (asset_id, session_id, track_json) VALUES (?, ?, ?) ON CONFLICT(asset_id) DO UPDATE SET track_json = excluded.track_json`,
       )
       .run(assetId, asset.session_id, JSON.stringify(track))
   }
   database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), asset.session_id)
   return getSession(asset.session_id)
+}
+
+export function saveBallTrack(assetId: string, track: BallTrack | null) {
+  return saveTrack('ball_tracks', assetId, track)
+}
+
+export function savePoseTrack(assetId: string, track: PoseTrack | null) {
+  return saveTrack('pose_tracks', assetId, track)
 }
 
 export function readCourts(sessionId: string): CourtCalibration[] {
@@ -422,6 +439,7 @@ export function readCourts(sessionId: string): CourtCalibration[] {
       }
       if (court.landmarks) clean.landmarks = court.landmarks
       if (court.callArea) clean.callArea = court.callArea
+      if (court.estimatedPoints) clean.estimatedPoints = court.estimatedPoints
       if (row.device_id) clean.deviceId = row.device_id
       courts.push(clean)
     } catch {
@@ -879,6 +897,7 @@ export async function deleteAsset(id: string) {
   if (!row) return false
   database().prepare('DELETE FROM assets WHERE id = ?').run(id)
   database().prepare('DELETE FROM ball_tracks WHERE asset_id = ?').run(id)
+  database().prepare('DELETE FROM pose_tracks WHERE asset_id = ?').run(id)
   database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), row.session_id)
   await unlink(mediaPath(id)).catch(() => undefined)
   return true

@@ -6,6 +6,7 @@ import type {
   CustomModel,
   Device,
   MediaAssetRecord,
+  PoseTrack,
   SessionDetail,
   Take,
 } from '../../shared/contracts.ts'
@@ -323,6 +324,29 @@ export async function saveRemoteBallTrack(track: BallTrack) {
 
 export async function clearRemoteBallTrack(assetId: string) {
   const response = await fetch(`/api/assets/${assetId}/ball-track`, { method: 'DELETE' })
+  if (response.status === 404) return
+  if (!response.ok) throw new Error(await errorText(response))
+}
+
+export function poseTracksById(tracks: PoseTrack[] | undefined) {
+  const byId: Record<string, PoseTrack> = {}
+  for (const track of tracks ?? []) {
+    if (track?.assetId && Array.isArray(track.frames)) byId[track.assetId] = track
+  }
+  return byId
+}
+
+export async function saveRemotePoseTrack(track: PoseTrack) {
+  const response = await fetch(`/api/assets/${track.assetId}/pose-track`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(track),
+  })
+  if (!response.ok) throw new Error(await errorText(response))
+}
+
+export async function clearRemotePoseTrack(assetId: string) {
+  const response = await fetch(`/api/assets/${assetId}/pose-track`, { method: 'DELETE' })
   if (response.status === 404) return
   if (!response.ok) throw new Error(await errorText(response))
 }

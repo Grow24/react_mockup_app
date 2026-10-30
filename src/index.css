@@ -80,7 +80,17 @@ h1, h2, h3 {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
 }
+
+.units-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: #5f574e;
+}
+.units-switch select { padding: 4px 6px; }
 
 .tab {
   display: inline-flex;
@@ -165,6 +175,7 @@ h1, h2, h3 {
 .still-pose { display: grid; gap: 8px; margin-top: 12px; }
 
 .court-photo img { cursor: crosshair; }
+.court-marker.estimated { background: transparent; border: 2px dashed #f3d38a; color: #f3d38a; }
 
 .court-marker {
   position: absolute;

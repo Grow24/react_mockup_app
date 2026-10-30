@@ -1,4 +1,6 @@
+import type { PersonPose } from '../../shared/contracts.ts'
 import type { AiSnapshot, PosePoint } from '../types'
+import { keypoint, PERSON_BONES, PLAYER_COLORS, playerName } from './players'
 
 const COLORS = ['#f3d38a', '#9ee8e2', '#f0b7a4', '#d7c4f2']
 
@@ -70,6 +72,53 @@ function pointAt(point: PosePoint, width: number, height: number) {
   return { x: point.x * width, y: point.y * height }
 }
 
+// Every person's skeleton, colored by player, with a name over the head.
+export function drawPeople(
+  ctx: CanvasRenderingContext2D,
+  people: PersonPose[],
+  scaleX: number,
+  scaleY: number,
+  caption: (person: PersonPose) => string | null = (person) => (person.player ? playerName(person.player) : null),
+) {
+  ctx.save()
+  ctx.lineCap = 'round'
+  ctx.font = '700 12px "Avenir Next", "Segoe UI", sans-serif'
+  ctx.textBaseline = 'alphabetic'
+  for (const person of people) {
+    const color = (person.player && PLAYER_COLORS[person.player]) || '#c9c1b6'
+    ctx.strokeStyle = color
+    ctx.fillStyle = color
+    ctx.lineWidth = 3
+    ctx.beginPath()
+    for (const [a, b] of PERSON_BONES) {
+      const from = keypoint(person, a)
+      const to = keypoint(person, b)
+      if (!from || !to) continue
+      ctx.moveTo(from.x * scaleX, from.y * scaleY)
+      ctx.lineTo(to.x * scaleX, to.y * scaleY)
+    }
+    ctx.stroke()
+    for (let index = 0; index < person.keypoints.length / 3; index += 1) {
+      const point = keypoint(person, index)
+      if (!point) continue
+      ctx.beginPath()
+      ctx.arc(point.x * scaleX, point.y * scaleY, 2.5, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    const text = caption(person)
+    if (text) {
+      const x = person.box.x * scaleX
+      const y = Math.max(14, person.box.y * scaleY - 6)
+      const width = ctx.measureText(text).width
+      ctx.fillStyle = 'rgba(22, 19, 16, 0.75)'
+      ctx.fillRect(x - 3, y - 13, width + 6, 17)
+      ctx.fillStyle = color
+      ctx.fillText(text, x, y)
+    }
+  }
+  ctx.restore()
+}
+
 export function drawAnnotations(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -104,6 +153,8 @@ export function drawAnnotations(
     ctx.fillStyle = '#1c1916'
     ctx.fillText(caption, x + padX, chipY + 3)
   }
+
+  if (snapshot.people?.length) drawPeople(ctx, snapshot.people, scaleX, scaleY)
 
   const pose = snapshot.pose
   if (pose.filter((point) => point.visibility >= 0.5).length < 4) return

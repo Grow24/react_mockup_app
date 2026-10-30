@@ -685,6 +685,11 @@ function continues(camera: CourtCamera, run: Observation[][], group: Observation
   return physical(chain, 1, first.t, last.t)
 }
 
+// The drawn 3D flight covering time t, if any.
+export function flightAt(fit: FlightFit | null | undefined, t: number) {
+  return fit?.flights.find((flight) => flight.reliable && t >= flight.from - 0.02 && t <= flight.to + 0.02) ?? null
+}
+
 export function flightBounces(flights: Flight[]) {
   return flights.flatMap((flight) =>
     flight.endBounce == null ? [] : [{ t: flight.endBounce, p: positionAt(flight, flight.endBounce) }],

@@ -7,6 +7,7 @@ import { useSyncedTake } from '../camera/useSyncedTake'
 import { AiControls } from '../components/AiControls'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import { BallModelSelect } from '../components/BallModelSelect'
+import { CourtLinesOverlay } from '../components/CourtLinesOverlay'
 import { LiveBallOverlay } from '../components/LiveBallOverlay'
 import { framePath, framePathLabel } from '../camera/webcodecs'
 import { formatClock, formatRange, formatSetting } from '../format'
@@ -16,11 +17,12 @@ import { useAi } from '../vision/context'
 import { useLiveAnalysis } from '../vision/useLiveAnalysis'
 import { useBallModel } from '../vision/useBallModel'
 import { useLiveBall, type LiveBounce } from '../vision/useLiveBall'
+import { length, useUnits, xyz, type Units } from '../units'
 
-function bounceLine(bounce: LiveBounce, now: number) {
+function bounceLine(bounce: LiveBounce, now: number, units: Units) {
   const ago = `${Math.max(0, now - bounce.t).toFixed(1)} s ago`
   const where = bounce.meters
-    ? `${bounce.meters.x.toFixed(1)} m from the left line, ${bounce.meters.y.toFixed(1)} m from the near line`
+    ? `${length(bounce.meters.x, units)} from the left line, ${length(bounce.meters.y, units)} from the near line`
     : 'mark the court for this phone to place it'
   return `${bounce.call ? `${bounce.call.toUpperCase()} · ` : ''}${where} · ${ago}${bounce.confirmed ? '' : ' (checking)'}`
 }
@@ -28,6 +30,7 @@ function bounceLine(bounce: LiveBounce, now: number) {
 export function CameraExplorer() {
   const previewRef = useRef<HTMLVideoElement | null>(null)
   const ai = useAi()
+  const units = useUnits()
   const { assets, storageWarning, noteCameras, sessionId, backend, courts, setBallTrack } = useSession()
   const trackRef = useRef<(assetId: string, fromMs: number, toMs: number) => BallTrack | null>(() => null)
   const camera = useCamera(previewRef, ai.readSnapshot, (video) => {
@@ -142,7 +145,13 @@ export function CameraExplorer() {
               sourceHeight={frame.height}
               snapshot={previewOn && ai.enabled ? ai.latest : null}
             />
-            <LiveBallOverlay frameRef={previewRef} view={previewOn ? liveBall.view : null} />
+            <CourtLinesOverlay
+              frameRef={previewRef}
+              court={previewOn && !liveBall.view ? ownCourt : null}
+              mediaWidth={frame.width}
+              mediaHeight={frame.height}
+            />
+            <LiveBallOverlay frameRef={previewRef} view={previewOn ? liveBall.view : null} court={previewOn ? ownCourt : null} />
             {camera.recording ? (
               <div className="rec-badge">
                 <span className="rec-dot" />
@@ -251,12 +260,17 @@ export function CameraExplorer() {
                   : 'No court is marked for this phone yet. Save a photo from this camera, mark its corners on Results, and bounces get in or out calls.'}
               </p>
             ) : null}
+            {liveBall.view?.ballNow ? (
+              <p className="note" role="status">
+                Ball now: {xyz(liveBall.view.ballNow.p, units)}
+              </p>
+            ) : null}
             {lastBounce && liveBall.view ? (
               <div className="line-call-box" role="status">
                 {lastBounce.call ? (
                   <span className={`line-call call-${lastBounce.call}`}>{lastBounce.call.toUpperCase()}</span>
                 ) : null}
-                <span className="muted">{bounceLine(lastBounce, liveBall.view.now)}</span>
+                <span className="muted">{bounceLine(lastBounce, liveBall.view.now, units)}</span>
               </div>
             ) : ballOn && liveBall.status === 'live' ? (
               <p className="muted">No bounce yet.</p>
@@ -267,7 +281,7 @@ export function CameraExplorer() {
                   .slice(0, -1)
                   .reverse()
                   .map((bounce) => (
-                    <li key={bounce.t}>{bounceLine(bounce, liveBall.view!.now)}</li>
+                    <li key={bounce.t}>{bounceLine(bounce, liveBall.view!.now, units)}</li>
                   ))}
               </ul>
             ) : null}

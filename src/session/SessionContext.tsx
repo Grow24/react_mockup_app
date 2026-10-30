@@ -5,12 +5,16 @@ import type {
   CourtCalibration,
   CustomModel,
   MediaAssetRecord,
+  PoseTrack,
   SessionDetail,
 } from '../../shared/contracts.ts'
 import type { MediaAsset, NewMediaAsset } from '../types'
 import {
   assetUrl,
   clearRemoteBallTrack,
+  clearRemotePoseTrack,
+  poseTracksById,
+  saveRemotePoseTrack,
   clearRemoteCourt,
   deleteRemoteAsset,
   deleteRemoteModel,
@@ -100,6 +104,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [courts, setCourtsState] = useState<CourtCalibration[]>([])
   const courtsRef = useRef<CourtCalibration[]>([])
   const [ballTracks, setBallTracksState] = useState<BallTracks>({})
+  const [poseTracks, setPoseTracks] = useState<Record<string, PoseTrack>>({})
   const [models, setModels] = useState<CustomModel[]>([])
   const [backend, setBackend] = useState<BackendStatus>('offline')
   const assetsRef = useRef(assets)
@@ -202,7 +207,33 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [publishBallTracks],
   )
 
+  // Pose tracks can be megabytes, so they live on the server; offline they last for this visit only.
+  const setPoseTrack = useCallback((assetId: string, track: PoseTrack | null) => {
+    setPoseTracks((current) => {
+      const next = { ...current }
+      if (track) next[assetId] = track
+      else delete next[assetId]
+      return next
+    })
+    if (backendRef.current !== 'online') {
+      if (track) setStorageWarning('The server is offline, so the player track lasts only for this visit.')
+      return
+    }
+    const uploaded = uploadsRef.current.get(assetId) ?? Promise.resolve()
+    const request = uploaded.then(() => (track ? saveRemotePoseTrack(track) : clearRemotePoseTrack(assetId)))
+    void request.catch((error) => {
+      console.error(error)
+      setStorageWarning('The player track was not saved on the server; it lasts only for this visit.')
+    })
+  }, [])
+
   const removeAsset = useCallback((id: string) => {
+    setPoseTracks((current) => {
+      if (!current[id]) return current
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
     if (ballTracksRef.current[id]) {
       const next = { ...ballTracksRef.current }
       delete next[id]
@@ -404,6 +435,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setAssets(latest.assets.map((asset) => fromServer(asset)))
           publishCourts(serverCourts(latest))
           publishBallTracks(tracks)
+          setPoseTracks(poseTracksById(latest.poseTracks))
           setModels(latest.models ?? [])
           setStorageWarning(notice)
         } catch (error) {
@@ -412,6 +444,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setAssets(latest.assets.map((asset) => fromServer(asset)))
           publishCourts(serverCourts(latest))
           setModels(latest.models ?? [])
+          setPoseTracks(poseTracksById(latest.poseTracks))
           publishBallTracks({ ...readLocalBallTracks(session.id), ...tracksById(latest.ballTracks) })
           setStorageWarning('Some files saved in this browser have not reached the server yet.')
         }
@@ -462,6 +495,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       locked,
       courts,
       ballTracks,
+      poseTracks,
       models,
       backend,
       addAsset,
@@ -470,6 +504,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setCourt,
       makePrivate,
       setBallTrack,
+      setPoseTrack,
       addModel,
       editModel,
       removeModel,
@@ -482,6 +517,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       locked,
       courts,
       ballTracks,
+      poseTracks,
       models,
       backend,
       addAsset,
@@ -490,6 +526,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       setCourt,
       makePrivate,
       setBallTrack,
+      setPoseTrack,
       addModel,
       editModel,
       removeModel,

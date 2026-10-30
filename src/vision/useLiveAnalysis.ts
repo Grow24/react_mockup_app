@@ -1,25 +1,34 @@
 import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
+import type { PersonPose } from '../../shared/contracts.ts'
+import { courtFor, deviceId } from '../session/api'
+import { useSession } from '../session/context'
 import type { Detection, PosePoint } from '../types'
 import { useAi } from './context'
 import { readDetections, readPose } from './engine'
-import { detectSource } from './onnxDetector'
+import { detectPeople, detectSource } from './onnxDetector'
 import { emptyPerformance, noteInference } from './performance'
+import { assignPlayers } from './players'
 
 export function useLiveAnalysis(
   videoRef: RefObject<HTMLVideoElement | null>,
   active: boolean,
 ) {
-  const { engines, confidence, objectDetector, objectModel, publish } = useAi()
+  const { engines, confidence, objectDetector, objectModel, poseMode, publish } = useAi()
+  const { courts } = useSession()
   const confidenceRef = useRef(confidence)
   const detectorRef = useRef(objectDetector)
   const modelRef = useRef(objectModel)
+  const poseModeRef = useRef(poseMode)
+  const courtRef = useRef(courtFor(courts, deviceId()))
 
   useEffect(() => {
     confidenceRef.current = confidence
     detectorRef.current = objectDetector
     modelRef.current = objectModel
-  }, [confidence, objectDetector, objectModel])
+    poseModeRef.current = poseMode
+    courtRef.current = courtFor(courts, deviceId())
+  }, [confidence, objectDetector, objectModel, poseMode, courts])
 
   useEffect(() => {
     if (!active || !engines) return
@@ -32,6 +41,7 @@ export function useLiveAnalysis(
     let detections: Detection[] = []
     let pose: PosePoint[] = []
     let worldPose: PosePoint[] = []
+    let people: PersonPose[] = []
     let inferenceMs = 0
     let presented = 0
     let perf = emptyPerformance()
@@ -54,10 +64,23 @@ export function useLiveAnalysis(
 
       const started = performance.now()
       try {
-        if (mode === 'pose') {
+        if (mode === 'pose' && poseModeRef.current === 'people') {
+          const reading = await detectPeople(video, video.videoWidth, video.videoHeight)
+          if (stopped) return
+          if (!reading) {
+            timer = window.setTimeout(tick, 40)
+            return
+          }
+          people = assignPlayers(reading.people, courtRef.current, video.videoWidth, video.videoHeight)
+          pose = []
+          worldPose = []
+          inferenceMs = reading.inferenceMs
+          mode = 'detect'
+        } else if (mode === 'pose') {
           const reading = readPose(engines, video)
           pose = reading.pose
           worldPose = reading.worldPose
+          people = []
           inferenceMs = reading.inferenceMs
           mode = 'detect'
         } else if (modelRef.current) {
@@ -84,6 +107,7 @@ export function useLiveAnalysis(
           detections: detections.filter((item) => item.score >= floor),
           pose,
           worldPose,
+          ...(people.length > 0 ? { people } : {}),
           inferenceMs,
           performance: noted.sample,
           objectModelId: detectorRef.current,

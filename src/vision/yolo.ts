@@ -1,4 +1,5 @@
 import { OBJECT_MODEL_ID, ONNX_MODEL_ID } from '../../shared/contracts.ts'
+import { COCO_KEYPOINTS, MAX_PEOPLE, type PersonPose } from '../../shared/contracts.ts'
 import type { Box, Detection } from '../types.ts'
 
 export { OBJECT_MODEL_ID, ONNX_MODEL_ID }
@@ -201,6 +202,59 @@ export function decodeYolo(
     if (kept.some((item) => iou(item.box, detection.box) > 0.45)) continue
     kept.push(detection)
     if (kept.length === 5) break
+  }
+  return kept
+}
+
+const KEYPOINTS = COCO_KEYPOINTS.length
+const round = (value: number, digits: number) => Math.round(value * 10 ** digits) / 10 ** digits
+
+// YOLOv8-pose: per anchor 4 box values, one person score, then x, y, and score for 17 keypoints,
+// all in the letterboxed input's pixels.
+export function decodeYoloPose(
+  data: Float32Array,
+  dims: readonly number[],
+  srcWidth: number,
+  srcHeight: number,
+  inputSize = YOLO_INPUT,
+  minScore = 0.3,
+): PersonPose[] {
+  const channels = 5 + KEYPOINTS * 3
+  if (dims.length < 3 || srcWidth < 2 || srcHeight < 2) return []
+  const channelsFirst = dims[1] === channels
+  if (!channelsFirst && dims[2] !== channels) return []
+  const anchors = channelsFirst ? dims[2]! : dims[1]!
+  const at = (anchor: number, channel: number) =>
+    channelsFirst ? data[channel * anchors + anchor]! : data[anchor * channels + channel]!
+  const fitted = letterbox(srcWidth, srcHeight, inputSize)
+  const toX = (value: number) => (value - fitted.padX) / fitted.scale
+  const toY = (value: number) => (value - fitted.padY) / fitted.scale
+  const found: PersonPose[] = []
+  for (let anchor = 0; anchor < anchors; anchor += 1) {
+    const score = at(anchor, 4)
+    if (score < minScore) continue
+    const w = at(anchor, 2) / fitted.scale
+    const h = at(anchor, 3) / fitted.scale
+    if (w <= 1 || h <= 1) continue
+    const x = Math.max(0, toX(at(anchor, 0) - at(anchor, 2) / 2))
+    const y = Math.max(0, toY(at(anchor, 1) - at(anchor, 3) / 2))
+    const keypoints: number[] = []
+    for (let k = 0; k < KEYPOINTS; k += 1) {
+      const base = 5 + k * 3
+      keypoints.push(round(toX(at(anchor, base)), 1), round(toY(at(anchor, base + 1)), 1), round(at(anchor, base + 2), 2))
+    }
+    found.push({
+      box: { x: round(x, 1), y: round(y, 1), width: round(Math.min(srcWidth - x, w), 1), height: round(Math.min(srcHeight - y, h), 1) },
+      score: round(score, 3),
+      keypoints,
+    })
+  }
+  found.sort((a, b) => b.score - a.score)
+  const kept: PersonPose[] = []
+  for (const person of found) {
+    if (kept.some((item) => iou(item.box, person.box) > 0.45)) continue
+    kept.push(person)
+    if (kept.length === MAX_PEOPLE) break
   }
   return kept
 }

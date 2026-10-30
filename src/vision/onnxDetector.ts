@@ -1,5 +1,6 @@
+import type { PersonPose } from '../../shared/contracts.ts'
 import type { Detection } from '../types'
-import { COCO_MODEL, specOf, type DetectorModel } from './models'
+import { COCO_MODEL, PEOPLE_SPEC, specOf, type DetectorModel, type ModelSpec } from './models'
 import type { DecodeOptions } from './yolo'
 
 export type OnnxBackend = { name: 'webgpu' | 'wasm'; threads: number }
@@ -10,16 +11,19 @@ type Result = {
   type: 'result'
   id: number
   detections: Detection[]
+  people?: PersonPose[]
   inferenceMs: number
   error?: string
 }
 
+type Reading = { detections: Detection[]; people: PersonPose[]; inferenceMs: number }
+
 let worker: Worker | null = null
 let nextId = 0
-let busy = false
+const busy = new Set<string>()
 let backend: OnnxBackend | null = null
 const loading = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>()
-const waiters = new Map<number, { resolve: (value: { detections: Detection[]; inferenceMs: number }) => void; reject: (error: Error) => void }>()
+const waiters = new Map<number, { resolve: (value: Reading) => void; reject: (error: Error) => void }>()
 
 function failAll(error: Error) {
   for (const entry of loading.values()) entry.reject(error)
@@ -47,7 +51,7 @@ function ensureWorker() {
     if (!waiter) return
     waiters.delete(message.id)
     if (message.error) waiter.reject(new Error(message.error))
-    else waiter.resolve({ detections: message.detections, inferenceMs: message.inferenceMs })
+    else waiter.resolve({ detections: message.detections, people: message.people ?? [], inferenceMs: message.inferenceMs })
   }
   worker.onerror = () => {
     failAll(new Error('The ONNX worker stopped.'))
@@ -56,7 +60,15 @@ function ensureWorker() {
 }
 
 export function prepareOnnx(model: DetectorModel = COCO_MODEL) {
-  const existing = loading.get(model.id)
+  return prepareSpec(specOf(model))
+}
+
+export function preparePeople() {
+  return prepareSpec(PEOPLE_SPEC)
+}
+
+function prepareSpec(spec: ModelSpec) {
+  const existing = loading.get(spec.key)
   if (existing) return existing.promise
   let resolve: () => void = () => undefined
   let reject: (error: Error) => void = () => undefined
@@ -65,8 +77,8 @@ export function prepareOnnx(model: DetectorModel = COCO_MODEL) {
     reject = fail
   })
   promise.catch(() => undefined)
-  loading.set(model.id, { promise, resolve, reject })
-  ensureWorker().postMessage({ type: 'load', spec: specOf(model) })
+  loading.set(spec.key, { promise, resolve, reject })
+  ensureWorker().postMessage({ type: 'load', spec })
   return promise
 }
 
@@ -77,7 +89,7 @@ export function onnxBackend() {
 export function resetOnnx() {
   worker?.terminate()
   worker = null
-  busy = false
+  busy.clear()
   failAll(new Error('ONNX was reset.'))
 }
 
@@ -87,20 +99,29 @@ export async function detectSource(
   height: number,
   options: DecodeOptions & { model?: DetectorModel } = {},
 ) {
-  if (busy || width < 2 || height < 2) return null
-  busy = true
   const { model = COCO_MODEL, ...decode } = options
+  return run(specOf(model), source, width, height, decode)
+}
+
+// Every person in the frame with 17 joints each, from YOLOv8n-pose.
+export async function detectPeople(source: CanvasImageSource, width: number, height: number, minScore = 0.3) {
+  const reading = await run(PEOPLE_SPEC, source, width, height, { minScore })
+  return reading ? { people: reading.people, inferenceMs: reading.inferenceMs } : null
+}
+
+// One frame per model at a time; a caller that finds its model busy gets null and tries again.
+async function run(spec: ModelSpec, source: CanvasImageSource, width: number, height: number, options: DecodeOptions) {
+  if (busy.has(spec.key) || width < 2 || height < 2) return null
+  busy.add(spec.key)
   try {
-    await prepareOnnx(model)
+    await prepareSpec(spec)
     const bitmap = await createImageBitmap(source)
     const id = ++nextId
-    return await new Promise<{ detections: Detection[]; inferenceMs: number }>((resolve, reject) => {
+    return await new Promise<Reading>((resolve, reject) => {
       waiters.set(id, { resolve, reject })
-      ensureWorker().postMessage({ type: 'detect', id, spec: specOf(model), bitmap, width, height, options: decode }, [
-        bitmap,
-      ])
+      ensureWorker().postMessage({ type: 'detect', id, spec, bitmap, width, height, options }, [bitmap])
     })
   } finally {
-    busy = false
+    busy.delete(spec.key)
   }
 }
