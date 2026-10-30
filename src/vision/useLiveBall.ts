@@ -118,7 +118,7 @@ export function useLiveBall(
       }
       const toCourt = groundFromImage(current)
       const meters = toCourt?.({ x: (image.x * current.sourceWidth) / width, y: (image.y * current.sourceHeight) / height }) ?? null
-      return { meters, call: meters ? lineCall(current.preset, meters) : null }
+      return { meters, call: meters ? lineCall(current.preset, meters, current.callArea) : null }
     }
 
     const confirm = (recent: BallFrame[], from: number, width: number, height: number) => {
@@ -143,7 +143,7 @@ export function useLiveBall(
                 ? { x: (image.x * width) / current.sourceWidth, y: (image.y * height) / current.sourceHeight }
                 : { x: 0, y: 0 },
               meters: { x: bounce.p.x, y: bounce.p.y },
-              call: lineCall(current.preset, bounce.p),
+              call: lineCall(current.preset, bounce.p, current.callArea),
               confirmed: true,
             })
           }

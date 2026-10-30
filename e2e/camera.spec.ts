@@ -34,7 +34,7 @@ test('tracks the ball in a recorded video and places the bounce in 3D', async ({
   await expect(panel.getByText(/Ball in \d+ of \d+ frames/)).toBeVisible()
   const bounce = panel.getByText(/^3D bounce 1 at/)
   await expect(bounce).toBeVisible({ timeout: 60_000 })
-  const [, x, y] = (await bounce.innerText()).match(/: ([\d.]+) m from the left line, ([\d.]+) m from the near line/)!
+  const [, x, y] = (await bounce.innerText()).match(/: IN · ([\d.]+) m from the left line, ([\d.]+) m from the near line/)!
   expect(Math.hypot(Number(x) - 3.5, Number(y) - 15)).toBeLessThan(1)
   await expect(panel.getByText(/^Rapier:/)).toBeVisible()
 })

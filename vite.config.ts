@@ -29,6 +29,20 @@ async function startApi() {
   })
 }
 
+// onnxruntime-web always loads its WASM from the CDN (wasmPaths in the worker), so the copy Vite
+// would bundle is 28 MB nobody downloads; leaving it out keeps the image small.
+function dropBundledOrtWasm(): Plugin {
+  return {
+    name: 'drop-bundled-ort-wasm',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      for (const name of Object.keys(bundle)) {
+        if (/ort-wasm[^/]*\.wasm$/.test(name)) delete bundle[name]
+      }
+    },
+  }
+}
+
 function pbmpBackend(): Plugin {
   return {
     name: 'pbmp-backend',
@@ -49,14 +63,14 @@ function pbmpBackend(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), pbmpBackend()],
+  plugins: [react(), pbmpBackend(), dropBundledOrtWasm()],
   optimizeDeps: {
     exclude: ['onnxruntime-web'],
   },
   server: {
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'credentialless',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
     },
     proxy: {
       '/api': `http://127.0.0.1:${apiPort}`,

@@ -7,6 +7,7 @@ import { isIP } from 'node:net'
 import { Readable } from 'node:stream'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { COURT_AREAS, landmarksProblem } from '../shared/court.ts'
 import { DATASET_README, dataYaml, TRAIN_SCRIPT, vocXml, yoloLabel } from './dataset.ts'
 import { tarGzip, untarGzip } from './tar.ts'
 import { uploadToRoboflow } from './roboflow.ts'
@@ -103,13 +104,15 @@ function isUuid(value: string) {
   return UUID.test(value)
 }
 
-async function readBody(req: IncomingMessage) {
+const MAX_BALL_TRACK_JSON = 4_000_000
+
+async function readBody(req: IncomingMessage, limit = MAX_JSON) {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     size += buffer.length
-    if (size > MAX_JSON) return undefined
+    if (size > limit) return undefined
     chunks.push(buffer)
   }
   const text = Buffer.concat(chunks).toString('utf8')
@@ -221,6 +224,15 @@ function asCourt(value: unknown): CourtCalibration | undefined {
     sourceWidth: court.sourceWidth,
     sourceHeight: court.sourceHeight,
     imagePoints,
+  }
+  if (court.landmarks != null) {
+    if (!Array.isArray(court.landmarks) || court.landmarks.some((id) => typeof id !== 'string')) return undefined
+    if (landmarksProblem(next.preset, court.landmarks)) return undefined
+    next.landmarks = court.landmarks.slice()
+  }
+  if (court.callArea != null) {
+    if (!COURT_AREAS[next.preset].some((area) => area.id === court.callArea)) return undefined
+    next.callArea = court.callArea
   }
   if (court.deviceId != null) {
     if (typeof court.deviceId !== 'string' || !isUuid(court.deviceId)) return undefined
@@ -1340,7 +1352,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     let track: BallTrack | null = null
     if (req.method === 'PUT') {
-      const body = await readBody(req)
+      const body = await readBody(req, MAX_BALL_TRACK_JSON)
       if (!body) {
         sendJson(res, 413, { error: 'Ball track is too large.' })
         return
@@ -1413,9 +1425,10 @@ async function serveApp(req: IncomingMessage, res: ServerResponse, urlPath: stri
   res.writeHead(200, {
     'Content-Type': fileTypes[path.extname(file)] ?? 'application/octet-stream',
     'Cache-Control': file.endsWith(`${path.sep}index.html`) ? 'no-store' : 'public, max-age=3600',
-    // Cross-origin isolation lets the ONNX worker use threads; credentialless keeps CDN files loading.
+    // Cross-origin isolation lets the ONNX worker use threads. require-corp works in Safari too; every
+    // CDN file the app loads answers with CORS or Cross-Origin-Resource-Policy.
     'Cross-Origin-Opener-Policy': 'same-origin',
-    'Cross-Origin-Embedder-Policy': 'credentialless',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
   })
   if (req.method === 'HEAD') {
     res.end()

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { COURT_PRESETS, TAKE_SECONDS, type BallTrack } from '../../shared/contracts.ts'
+import { TAKE_SECONDS, type BallTrack } from '../../shared/contracts.ts'
+import { courtArea } from '../../shared/court.ts'
 import { useCamera } from '../camera/useCamera'
 import { useSyncedTake } from '../camera/useSyncedTake'
 import { AiControls } from '../components/AiControls'
@@ -246,7 +247,7 @@ export function CameraExplorer() {
             {ballOn ? (
               <p className="muted">
                 {ownCourt
-                  ? `Bounces are called on the ${COURT_PRESETS[ownCourt.preset].label.toLowerCase()} court marked for this phone. Lines count as in.`
+                  ? `Bounces are called for the ${courtArea(ownCourt.preset, ownCourt.callArea).label.toLowerCase()} marked for this phone. Lines count as in.`
                   : 'No court is marked for this phone yet. Save a photo from this camera, mark its corners on Results, and bounces get in or out calls.'}
               </p>
             ) : null}

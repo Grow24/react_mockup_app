@@ -420,6 +420,8 @@ export function readCourts(sessionId: string): CourtCalibration[] {
         sourceHeight: court.sourceHeight,
         imagePoints: court.imagePoints,
       }
+      if (court.landmarks) clean.landmarks = court.landmarks
+      if (court.callArea) clean.callArea = court.callArea
       if (row.device_id) clean.deviceId = row.device_id
       courts.push(clean)
     } catch {

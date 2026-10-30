@@ -1,11 +1,24 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import type { BallPoint, BallTrack, CourtCalibration, CourtPoint, CourtPreset } from '../../shared/contracts.ts'
+import type { BallPoint, BallTrack, CourtCalibration, CourtPoint } from '../../shared/contracts.ts'
+import { courtArea, courtLines } from '../../shared/court.ts'
 import { BallFlight } from './BallFlight'
 import { BallModelSelect } from './BallModelSelect'
 import { useBallModel } from '../vision/useBallModel'
 import { courtFitsTrack, groundPoints, pointAt, trailAt } from '../vision/ball'
-import { BALL_SAMPLE_FPS, trackBall } from '../vision/ballTracker'
-import { courtMeters, courtPixelSize } from '../vision/court'
+import { BALL_FPS_CHOICES, BALL_SAMPLE_FPS, trackBall } from '../vision/ballTracker'
+
+const FPS_KEY = 'pbmp-ball-fps'
+
+function readFps() {
+  try {
+    const stored = Number(localStorage.getItem(FPS_KEY))
+    return (BALL_FPS_CHOICES as readonly number[]).includes(stored) ? stored : BALL_SAMPLE_FPS
+  } catch {
+    return BALL_SAMPLE_FPS
+  }
+}
+import { courtMeters, courtPixelSize, mapPixel } from '../vision/court'
+import { lineCall } from '../vision/flight'
 import { frameRect } from '../vision/draw'
 import { projectToCourt } from '../vision/opencv'
 
@@ -78,13 +91,37 @@ function insideMap(point: CourtPoint, width: number, height: number) {
   return point.x > -width * 0.5 && point.x < width * 1.5 && point.y > -height * 0.5 && point.y < height * 1.5
 }
 
+function drawCourtLines(context: CanvasRenderingContext2D, court: Pick<CourtCalibration, 'preset' | 'callArea'>) {
+  const preset = court.preset
+  const size = courtPixelSize(preset)
+  context.fillStyle = '#2e6b4a'
+  context.fillRect(0, 0, size.width, size.height)
+  const area = courtArea(preset, court.callArea)
+  const corner = mapPixel(preset, { x: area.x0, y: area.y1 })
+  const far = mapPixel(preset, { x: area.x1, y: area.y0 })
+  context.fillStyle = 'rgba(127, 216, 207, 0.22)'
+  context.fillRect(corner.x, corner.y, far.x - corner.x, far.y - corner.y)
+  context.strokeStyle = '#f6f1ea'
+  context.lineWidth = 2
+  for (const line of courtLines(preset)) {
+    const from = mapPixel(preset, line.from)
+    const to = mapPixel(preset, line.to)
+    context.setLineDash(line.dashed ? [6, 6] : [])
+    context.beginPath()
+    context.moveTo(from.x, from.y)
+    context.lineTo(to.x, to.y)
+    context.stroke()
+  }
+  context.setLineDash([])
+}
+
 function drawCourtMap(
   canvas: HTMLCanvasElement,
-  preset: CourtPreset,
+  court: CourtCalibration,
   points: BallPoint[],
   flat: CourtPoint[],
 ) {
-  const size = courtPixelSize(preset)
+  const size = courtPixelSize(court.preset)
   canvas.width = size.width + MAP_PAD * 2
   canvas.height = size.height + MAP_PAD * 2
   const context = canvas.getContext('2d')
@@ -92,17 +129,7 @@ function drawCourtMap(
   context.fillStyle = '#161310'
   context.fillRect(0, 0, canvas.width, canvas.height)
   context.translate(MAP_PAD, MAP_PAD)
-  context.fillStyle = '#2e6b4a'
-  context.fillRect(0, 0, size.width, size.height)
-  context.strokeStyle = '#f6f1ea'
-  context.lineWidth = 2
-  context.strokeRect(0, 0, size.width, size.height)
-  context.setLineDash([6, 6])
-  context.beginPath()
-  context.moveTo(0, size.height / 2)
-  context.lineTo(size.width, size.height / 2)
-  context.stroke()
-  context.setLineDash([])
+  drawCourtLines(context, court)
 
   context.strokeStyle = 'rgba(243, 211, 138, 0.55)'
   context.lineWidth = 2
@@ -144,22 +171,17 @@ function BallCourtMap({ track, court }: { track: BallTrack; court: CourtCalibrat
     const canvas = canvasRef.current
     if (!canvas) return
     let current = true
-    projectToCourt(court.preset, court.imagePoints, groundPoints(track, court))
+    projectToCourt(court, groundPoints(track, court))
       .then((flat) => {
         if (!current) return
-        drawCourtMap(canvas, court.preset, track.points, flat)
-        const size = courtPixelSize(court.preset)
+        drawCourtMap(canvas, court, track.points, flat)
         const next: string[] = []
         track.points.forEach((point, index) => {
           if (!point.bounce) return
           const meters = courtMeters(court.preset, flat[index]!)
-          const outside =
-            meters.fromLeft < -0.5 ||
-            meters.fromNear < -0.5 ||
-            meters.fromLeft > size.widthMeters + 0.5 ||
-            meters.fromNear > size.lengthMeters + 0.5
+          const call = lineCall(court.preset, { x: meters.fromLeft, y: meters.fromNear }, court.callArea)
           next.push(
-            `Bounce ${next.length + 1} at ${point.t.toFixed(1)} s: ${meters.fromLeft.toFixed(1)} m from the left line, ${meters.fromNear.toFixed(1)} m from the near line${outside ? ' (outside the court)' : ''}`,
+            `Bounce ${next.length + 1} at ${point.t.toFixed(1)} s: ${call.toUpperCase()} · ${meters.fromLeft.toFixed(1)} m from the left line, ${meters.fromNear.toFixed(1)} m from the near line`,
           )
         })
         setLines(next)
@@ -179,7 +201,8 @@ function BallCourtMap({ track, court }: { track: BallTrack; court: CourtCalibrat
     <div className="still-pose">
       <p className="muted">
         Top-down court. The faint line is the ball&apos;s path as if it were on the ground, so only the
-        numbered bounces are true court positions.
+        numbered bounces are true court positions. Calls are for the shaded area:{' '}
+        {courtArea(court.preset, court.callArea).label.toLowerCase()}.
       </p>
       <canvas ref={canvasRef} className="court-flat" aria-label="Ball path on the court" />
       {error ? (
@@ -221,6 +244,7 @@ export function BallPanel({
   const [message, setMessage] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const ballModel = useBallModel()
+  const [fps, setFps] = useState(readFps)
   const abortRef = useRef<AbortController | null>(null)
   const running = progress !== null
 
@@ -243,6 +267,7 @@ export function BallPanel({
         if (!controller.signal.aborted) setProgress({ done, total, found })
       },
       ballModel.model,
+      fps,
     )
       .then((next) => {
         if (controller.signal.aborted) return
@@ -279,9 +304,31 @@ export function BallPanel({
       <h4>Ball tracking</h4>
       <p className="muted">
         {ballModel.model.builtIn
-          ? `YOLOv8n looks for a sports ball in ${BALL_SAMPLE_FPS} frames per second of this video and links the hits into one path. The first run downloads about 12 MB.`
-          : `${ballModel.model.name} looks for ${ballModel.model.ballClasses.map((index) => ballModel.model.labels[index]).join(', ') || 'a ball'} in ${BALL_SAMPLE_FPS} frames per second of this video and links the hits into one path.`}
+          ? `YOLOv8n looks for a sports ball in ${fps} frames per second of this video and links the hits into one path. The first run downloads about 12 MB.`
+          : `${ballModel.model.name} looks for ${ballModel.model.ballClasses.map((index) => ballModel.model.labels[index]).join(', ') || 'a ball'} in ${fps} frames per second of this video and links the hits into one path.`}
       </p>
+      <label className="field">
+        <span>Frames per second to read</span>
+        <select
+          value={fps}
+          disabled={running}
+          onChange={(event) => {
+            const next = Number(event.target.value)
+            setFps(next)
+            try {
+              localStorage.setItem(FPS_KEY, String(next))
+            } catch {
+              // The choice still applies for this visit.
+            }
+          }}
+        >
+          {BALL_FPS_CHOICES.map((choice) => (
+            <option key={choice} value={choice}>
+              {choice} per second{choice === BALL_SAMPLE_FPS ? ', quickest' : choice === 30 ? ', most 3D points for fast shots' : ''}
+            </option>
+          ))}
+        </select>
+      </label>
       {ballModel.choices.length > 1 ? (
         <BallModelSelect
           model={ballModel.model}
@@ -328,7 +375,7 @@ export function BallPanel({
           {track.live ? (
             <p className="muted">
               Tracked live at about {track.sampleFps} checks per second while recording. Track again to read{' '}
-              {BALL_SAMPLE_FPS} frames per second.
+              {fps} frames per second.
             </p>
           ) : null}
           {bounces.length > 0 ? (

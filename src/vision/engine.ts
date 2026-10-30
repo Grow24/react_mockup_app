@@ -1,10 +1,4 @@
-import {
-  FilesetResolver,
-  ObjectDetector,
-  PoseLandmarker,
-  type ObjectDetector as Detector,
-  type PoseLandmarker as Landmarker,
-} from '@mediapipe/tasks-vision'
+import type { ObjectDetector as Detector, PoseLandmarker as Landmarker } from '@mediapipe/tasks-vision'
 import type { Detection, PosePoint } from '../types'
 
 const WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.0/wasm'
@@ -30,7 +24,9 @@ function nextStamp(current: number) {
   return Math.max(current + 1, now)
 }
 
+// MediaPipe loads only when AI is turned on, so the first screen does not wait for it.
 async function createEngines(delegate: DelegateName): Promise<Engines> {
+  const { FilesetResolver, ObjectDetector, PoseLandmarker } = await import('@mediapipe/tasks-vision')
   const wasm = await FilesetResolver.forVisionTasks(WASM)
   const canvas = delegate === 'GPU' ? document.createElement('canvas') : undefined
   const detector = await ObjectDetector.createFromOptions(wasm, {

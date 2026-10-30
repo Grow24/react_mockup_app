@@ -2,21 +2,26 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { COURT_PRESETS, type BallTrack, type CourtCalibration, type CourtPreset } from '../../shared/contracts.ts'
+import { courtArea, courtLines } from '../../shared/court.ts'
 import { flightBounces, peakHeight, positionAt, velocityAt, type Flight, type FlightFit, type Vec3 } from '../vision/flight'
 import { fitFlightsInWorker } from '../vision/flightFit'
 import { flightPaths, PREDICT_SECONDS, predictionText, describeSpot, type PathSample } from '../vision/flightText'
-import { predictFlight, type Prediction } from '../vision/physics'
+import { airFor, readAirChoice } from '../vision/air'
+import { airText, predictFlight, type Air, type Prediction } from '../vision/physics'
+import { AirSelect } from './AirSelect'
 
 const PAUSE_SECONDS = 0.6
 
 export function FlightView({
   preset,
+  callArea,
   paths,
   bounces,
   prediction,
   cameras,
 }: {
   preset: CourtPreset
+  callArea?: string
   paths: PathSample[][]
   bounces: Vec3[]
   prediction: Prediction | null
@@ -61,25 +66,29 @@ export function FlightView({
     )
     court.rotation.x = -Math.PI / 2
     scene.add(court)
+    const area = courtArea(preset, callArea)
+    const shaded = new THREE.Mesh(
+      keep(new THREE.PlaneGeometry(area.x1 - area.x0, area.y1 - area.y0)),
+      keep(new THREE.MeshBasicMaterial({ color: 0x3f8f7c })),
+    )
+    shaded.rotation.x = -Math.PI / 2
+    shaded.position.copy(place({ x: (area.x0 + area.x1) / 2, y: (area.y0 + area.y1) / 2, z: 0.002 }))
+    scene.add(shaded)
     const lineMaterial = keep(new THREE.LineBasicMaterial({ color: 0xf6f1ea }))
-    const corners = [
-      { x: 0, y: 0, z: 0.005 },
-      { x: width, y: 0, z: 0.005 },
-      { x: width, y: length, z: 0.005 },
-      { x: 0, y: length, z: 0.005 },
-    ].map(place)
-    scene.add(new THREE.LineLoop(keep(new THREE.BufferGeometry().setFromPoints(corners)), lineMaterial))
-    scene.add(
-      new THREE.Line(
+    const dashedMaterial = keep(new THREE.LineDashedMaterial({ color: 0xf6f1ea, dashSize: 0.3, gapSize: 0.25 }))
+    for (const line of courtLines(preset)) {
+      const drawn = new THREE.Line(
         keep(
           new THREE.BufferGeometry().setFromPoints([
-            place({ x: 0, y: length / 2, z: 0.005 }),
-            place({ x: width, y: length / 2, z: 0.005 }),
+            place({ ...line.from, z: 0.005 }),
+            place({ ...line.to, z: 0.005 }),
           ]),
         ),
-        lineMaterial,
-      ),
-    )
+        line.dashed ? dashedMaterial : lineMaterial,
+      )
+      if (line.dashed) drawn.computeLineDistances()
+      scene.add(drawn)
+    }
     if (preset === 'tennis-doubles') {
       const net = new THREE.Mesh(
         keep(new THREE.PlaneGeometry(width + 1.83, 0.914)),
@@ -193,7 +202,7 @@ export function FlightView({
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [preset, paths, bounces, prediction, cameras])
+  }, [preset, callArea, paths, bounces, prediction, cameras])
 
   return (
     <div
@@ -216,7 +225,9 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
   const seenBounces = useMemo(() => flightBounces(flights).map((bounce) => bounce.p), [flights])
   const cameras = useMemo(() => (fit ? [fit.camera.position] : []), [fit])
   const last = flights[flights.length - 1]
-  const [predicted, setPredicted] = useState<{ from: Flight; prediction: Prediction } | null>(null)
+  const [airId, setAirId] = useState(() => readAirChoice(court.preset))
+  const air = airFor(court.preset, airId)
+  const [predicted, setPredicted] = useState<{ from: Flight; air: Air; prediction: Prediction } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -238,10 +249,10 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
   useEffect(() => {
     if (!last) return
     let current = true
-    predictFlight(court.preset, { t: last.to, p: positionAt(last, last.to), v: velocityAt(last, last.to) }, PREDICT_SECONDS)
+    predictFlight(court.preset, { t: last.to, p: positionAt(last, last.to), v: velocityAt(last, last.to) }, PREDICT_SECONDS, air)
       .then((prediction) => {
         if (!current) return
-        setPredicted({ from: last, prediction })
+        setPredicted({ from: last, air, prediction })
         setError(null)
       })
       .catch((caught) => {
@@ -252,7 +263,7 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
     return () => {
       current = false
     }
-  }, [court.preset, last])
+  }, [court.preset, last, air])
 
   if (fit === undefined) {
     return error ? (
@@ -267,13 +278,13 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
   if (!fit) {
     return (
       <p className="muted">
-        The camera could not be placed from these corners. Check that they were clicked in order: Near left,
-        Near right, Far right, Far left.
+        The camera could not be placed from these court points. Check that each click matches the point named
+        for it, in the same order.
       </p>
     )
   }
 
-  const prediction = predicted && predicted.from === last ? predicted.prediction : null
+  const prediction = predicted && predicted.from === last && predicted.air === air ? predicted.prediction : null
   const position = fit.camera.position
   return (
     <div className="still-pose">
@@ -291,7 +302,12 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
             <li key={flight.t0}>
               Flight {index + 1} · {flight.from.toFixed(2)}–{flight.to.toFixed(2)} s · peak{' '}
               {peakHeight(flight).toFixed(1)} m · {(Math.hypot(v.x, v.y, v.z) * 3.6).toFixed(0)} km/h · fit{' '}
-              {flight.rmsPx.toFixed(1)} px{flight.reliable ? '' : ' (poor fit, not drawn)'}
+              {flight.rmsPx.toFixed(1)} px
+              {flight.reliable
+                ? ` · height ±${(flight.heightSigma * 100).toFixed(0)} cm`
+                : flight.heightSigma > 0.5 && Number.isFinite(flight.heightSigma)
+                  ? ` (height uncertain by ±${flight.heightSigma.toFixed(1)} m from one camera, not drawn)`
+                  : ' (poor fit, not drawn)'}
             </li>
           )
         })}
@@ -303,7 +319,7 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
         ) : null}
         {flightBounces(flights).map((bounce, index) => (
           <li key={bounce.t}>
-            3D bounce {index + 1} at {bounce.t.toFixed(2)} s: {describeSpot(court.preset, bounce.p)}
+            3D bounce {index + 1} at {bounce.t.toFixed(2)} s: {describeSpot(court.preset, bounce.p, court.callArea)}
           </li>
         ))}
       </ul>
@@ -311,16 +327,18 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
         <>
           <FlightView
             preset={court.preset}
+            callArea={court.callArea}
             paths={paths}
             bounces={seenBounces}
             prediction={prediction}
             cameras={cameras}
           />
-          {prediction ? <p className="note">{predictionText(court.preset, prediction)}</p> : null}
+          <AirSelect preset={court.preset} value={airId} onChange={setAirId} />
+          {prediction ? <p className="note">{predictionText(court.preset, prediction, court.callArea)}</p> : null}
           {!prediction && !error ? <p className="muted">Loading Rapier physics.</p> : null}
           <p className="muted">
             Gold is the tracked flight, teal is the Rapier prediction after the video ends, and the white dot
-            is the camera. No spin or air drag is modeled.
+            is the camera. {airText(air)}
           </p>
         </>
       ) : (

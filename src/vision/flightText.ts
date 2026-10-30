@@ -1,22 +1,20 @@
-import { COURT_PRESETS, type CourtPreset } from '../../shared/contracts.ts'
-import { positionAt, type Flight, type Vec3 } from './flight'
+import type { CourtPreset } from '../../shared/contracts.ts'
+import { lineCall, positionAt, type Flight, type Vec3 } from './flight'
 import type { Prediction } from './physics'
 
 export const PREDICT_SECONDS = 2
 
-export function describeSpot(preset: CourtPreset, p: Vec3) {
-  const { widthMeters, lengthMeters } = COURT_PRESETS[preset]
-  const outside = p.x < -0.5 || p.y < -0.5 || p.x > widthMeters + 0.5 || p.y > lengthMeters + 0.5
-  return `${p.x.toFixed(1)} m from the left line, ${p.y.toFixed(1)} m from the near line${outside ? ' (outside the court)' : ''}`
+export function describeSpot(preset: CourtPreset, p: Vec3, areaId?: string) {
+  return `${lineCall(preset, p, areaId).toUpperCase()} · ${p.x.toFixed(1)} m from the left line, ${p.y.toFixed(1)} m from the near line`
 }
 
-export function predictionText(preset: CourtPreset, prediction: Prediction) {
+export function predictionText(preset: CourtPreset, prediction: Prediction, areaId?: string) {
   const firstBounce = prediction.bounces[0]
   if (prediction.obstacle && (!firstBounce || prediction.obstacle.t <= firstBounce.t)) {
     return `Rapier: the ball hits the ${prediction.obstacle.name} at ${prediction.obstacle.t.toFixed(1)} s.`
   }
   if (!firstBounce) return `Rapier: no bounce in the next ${PREDICT_SECONDS} s.`
-  return `Rapier: next bounce at ${firstBounce.t.toFixed(1)} s, ${describeSpot(preset, firstBounce.p)}.`
+  return `Rapier: next bounce at ${firstBounce.t.toFixed(1)} s, ${describeSpot(preset, firstBounce.p, areaId)}.`
 }
 
 export type PathSample = { t: number; p: Vec3 }

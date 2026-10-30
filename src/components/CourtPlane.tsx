@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { COURT_PRESETS, type CourtCalibration, type CourtPoint, type CourtPreset } from '../../shared/contracts.ts'
+import {
+  COURT_AREAS,
+  COURT_LANDMARKS,
+  courtArea,
+  defaultLandmarks,
+  LANDMARK_SETS,
+  landmarkById,
+  landmarksProblem,
+} from '../../shared/court.ts'
 import { AnnotationCanvas } from './AnnotationCanvas'
 import type { AiSnapshot } from '../types'
-import { CORNER_LABELS } from '../vision/court'
 import { frameRect } from '../vision/draw'
 import { renderCourt } from '../vision/opencv'
 
@@ -53,6 +61,12 @@ export function CourtPlane({
   const [image, setImage] = useState<HTMLImageElement | null>(null)
   const [preset, setPreset] = useState<CourtPreset>(owns && saved ? saved.preset : 'tennis-doubles')
   const [points, setPoints] = useState<CourtPoint[]>(owns && saved ? saved.imagePoints : [])
+  const [landmarks, setLandmarks] = useState<string[]>(
+    owns && saved?.landmarks ? saved.landmarks : defaultLandmarks(owns && saved ? saved.preset : 'tennis-doubles'),
+  )
+  const [callArea, setCallArea] = useState<string>(courtArea(preset, owns ? saved?.callArea : undefined).id)
+  const problem = landmarksProblem(preset, landmarks)
+  const setId = LANDMARK_SETS[preset].find((set) => set.landmarks.join() === landmarks.join())?.id ?? 'custom'
   const [lines, setLines] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -76,7 +90,7 @@ export function CourtPlane({
       if (!point || point.visibility < 0.5) return []
       return [{ label: ankle.label, point: { x: point.x * sourceWidth, y: point.y * sourceHeight } }]
     })
-    renderCourt(image, canvas, preset, sourceWidth, sourceHeight, points, markers, () => current)
+    renderCourt(image, canvas, { preset, landmarks, imagePoints: points }, sourceWidth, sourceHeight, markers, () => current)
       .then((next) => {
         if (!current) return
         setLines(next)
@@ -91,22 +105,39 @@ export function CourtPlane({
     return () => {
       current = false
     }
-  }, [image, points, preset, snapshot, sourceWidth, sourceHeight])
+  }, [image, points, preset, landmarks, snapshot, sourceWidth, sourceHeight])
 
-  function publish(nextPoints: CourtPoint[], nextPreset: CourtPreset) {
+  function publish(
+    nextPoints: CourtPoint[],
+    next: { preset?: CourtPreset; landmarks?: string[]; callArea?: string } = {},
+  ) {
+    const nextPreset = next.preset ?? preset
+    const nextLandmarks = next.landmarks ?? landmarks
+    if (nextPoints.length !== 4 || landmarksProblem(nextPreset, nextLandmarks)) return
     const court: CourtCalibration = {
       preset: nextPreset,
       assetId,
       sourceWidth,
       sourceHeight,
       imagePoints: nextPoints,
+      callArea: next.callArea ?? callArea,
     }
+    if (nextLandmarks.join() !== defaultLandmarks(nextPreset).join()) court.landmarks = nextLandmarks
     if (deviceId) court.deviceId = deviceId
     onSave(court)
   }
 
+  // Changing which point a click means makes the clicks so far meaningless.
+  function chooseLandmarks(next: string[]) {
+    setLandmarks(next)
+    if (points.length === 0) return
+    setPoints([])
+    setLines([])
+    if (owns) onClear()
+  }
+
   function clickImage(event: MouseEvent<HTMLImageElement>) {
-    if (!image || points.length >= 4) return
+    if (!image || points.length >= 4 || problem) return
     const bounds = frameRect(image.clientWidth, image.clientHeight, sourceWidth, sourceHeight)
     const rect = image.getBoundingClientRect()
     const x = event.clientX - rect.left - bounds.x
@@ -114,7 +145,7 @@ export function CourtPlane({
     if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) return
     const next = [...points, { x: (x / bounds.width) * sourceWidth, y: (y / bounds.height) * sourceHeight }]
     setPoints(next)
-    if (next.length === 4) publish(next, preset)
+    if (next.length === 4) publish(next)
   }
 
   function clearCourt() {
@@ -126,12 +157,17 @@ export function CourtPlane({
   return (
     <div className="still-pose">
       <p className="muted">
-        Click the four court corners in order: {CORNER_LABELS.join(', ')}. OpenCV.js builds the top-down
-        plane. {points.length < 4 ? `Next: ${CORNER_LABELS[points.length]}.` : 'All four corners are set.'}
+        Click four court points this camera can see, in the order below. They do not have to be the outer
+        corners: the service line ends or one half of the court work too. OpenCV.js builds the top-down plane.{' '}
+        {problem
+          ? problem
+          : points.length < 4
+            ? `Next: ${landmarkById(preset, landmarks[points.length]!)?.label}.`
+            : 'All four points are set.'}
       </p>
       {saved && !owns ? (
         <p className="muted">
-          Corners for this camera were marked on another photo. Mark this photo to replace them.
+          The court for this camera was marked on another photo. Mark this photo to replace it.
         </p>
       ) : null}
       <label className="field">
@@ -141,12 +177,70 @@ export function CourtPlane({
           onChange={(event) => {
             const next = event.target.value as CourtPreset
             setPreset(next)
-            if (points.length === 4) publish(points, next)
+            setCallArea(courtArea(next).id)
+            chooseLandmarks(defaultLandmarks(next))
           }}
         >
           {Object.entries(COURT_PRESETS).map(([id, spec]) => (
             <option key={id} value={id}>
               {spec.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span>Points to click</span>
+        <select
+          value={setId}
+          onChange={(event) => {
+            const set = LANDMARK_SETS[preset].find((item) => item.id === event.target.value)
+            if (set) chooseLandmarks(set.landmarks)
+          }}
+        >
+          {LANDMARK_SETS[preset].map((set) => (
+            <option key={set.id} value={set.id}>
+              {set.label}
+            </option>
+          ))}
+          <option value="custom" disabled={setId !== 'custom'}>
+            My own four points
+          </option>
+        </select>
+      </label>
+      <details className="field">
+        <summary>Choose each point</summary>
+        {landmarks.map((id, index) => (
+          <label key={index} className="field">
+            <span>Point {index + 1}</span>
+            <select
+              value={id}
+              onChange={(event) => {
+                const next = landmarks.slice()
+                next[index] = event.target.value
+                chooseLandmarks(next)
+              }}
+            >
+              {COURT_LANDMARKS[preset].map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ))}
+      </details>
+      <label className="field">
+        <span>Call bounces for</span>
+        <select
+          value={callArea}
+          onChange={(event) => {
+            setCallArea(event.target.value)
+            publish(points, { callArea: event.target.value })
+          }}
+        >
+          {COURT_AREAS[preset].map((area) => (
+            <option key={area.id} value={area.id}>
+              {area.label}
             </option>
           ))}
         </select>
@@ -188,7 +282,7 @@ export function CourtPlane({
             if (owns && next.length < 4) onClear()
           }}
         >
-          Undo corner
+          Undo point
         </button>
         <button type="button" className="secondary" onClick={clearCourt}>
           Clear court

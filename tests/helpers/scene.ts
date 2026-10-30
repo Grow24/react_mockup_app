@@ -1,4 +1,5 @@
 import type { BallPoint, BallTrack, CourtCalibration } from '../../shared/contracts.ts'
+import { courtWorldPoints } from '../../shared/court.ts'
 import { projectPoint, type CourtCamera, type Vec3 } from '../../src/vision/flight.ts'
 
 // A known camera, court, and ball flight, so the vision math can be checked against ground truth.
@@ -38,22 +39,14 @@ export function truth(t: number): Vec3 {
   return { x: 3.5 + v0.x * s, y: 15 + v0.y * s, z: R + up * s - 4.905 * s * s }
 }
 
-export function courtFor(camera: CourtCamera, width: number, height: number): CourtCalibration {
-  return {
-    preset: 'tennis-doubles',
-    assetId: 'scene',
-    sourceWidth: width,
-    sourceHeight: height,
-    imagePoints: [
-      [0, 0],
-      [W, 0],
-      [W, L],
-      [0, L],
-    ].map(([x, y]) => {
-      const point = projectPoint(camera, { x: x!, y: y!, z: 0 })!
-      return { x: point.x, y: point.y }
-    }),
-  }
+export function courtFor(camera: CourtCamera, width: number, height: number, landmarks?: string[]): CourtCalibration {
+  const court: CourtCalibration = { preset: 'tennis-doubles', assetId: 'scene', sourceWidth: width, sourceHeight: height, imagePoints: [] }
+  if (landmarks) court.landmarks = landmarks
+  court.imagePoints = courtWorldPoints(court).map((world) => {
+    const point = projectPoint(camera, { ...world, z: 0 })!
+    return { x: point.x, y: point.y }
+  })
+  return court
 }
 
 export const behind = lookAtCamera({ x: W / 2 + 1, y: -9, z: 6 }, { x: W / 2, y: L / 2, z: 0 }, 475, 640, 360)

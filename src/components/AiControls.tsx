@@ -2,6 +2,7 @@ import { formatPercent, formatPerformance } from '../format'
 import { useSession } from '../session/context'
 import { useAi } from '../vision/context'
 import { modelChoices } from '../vision/models'
+import { onnxBackend } from '../vision/onnxDetector'
 import { OBJECT_MODEL_ID } from '../vision/yolo'
 
 function statusLabel(status: string) {
@@ -58,8 +59,9 @@ export function AiControls() {
       ) : null}
       {ai.status === 'ready' && model ? (
         <p className="muted">
-          {model.builtIn ? 'YOLOv8n' : model.name} is running in a worker. Pose still uses MediaPipe
-          {ai.delegate ? ` on ${ai.delegate}` : ''}.
+          {model.builtIn ? 'YOLOv8n' : model.name} is running in a worker
+          {onnxBackend() ? (onnxBackend()!.name === 'webgpu' ? ' on WebGPU' : ` on WASM ×${onnxBackend()!.threads}`) : ''}. Pose
+          still uses MediaPipe{ai.delegate ? ` on ${ai.delegate}` : ''}.
         </p>
       ) : null}
       {ai.status === 'ready' && ai.objectDetector === OBJECT_MODEL_ID && ai.delegate ? (

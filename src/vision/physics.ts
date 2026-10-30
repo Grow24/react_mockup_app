@@ -13,6 +13,22 @@ export type Prediction = {
 
 const STEP_SECONDS = 1 / 240
 const SAMPLE_EVERY = 4
+const AIR_DENSITY = 1.2
+const BALL_MASS: Record<CourtPreset, number> = { 'tennis-doubles': 0.057, 'cricket-pitch': 0.16 }
+const DRAG_COEFFICIENT: Record<CourtPreset, number> = { 'tennis-doubles': 0.55, 'cricket-pitch': 0.5 }
+// About 2500 rpm for a topspin drive and 1500 rpm for a slice.
+const SPIN_RATE = { topspin: 262, slice: 157 }
+
+export type Spin = 'none' | 'topspin' | 'slice'
+export type Air = { drag: boolean; spin: Spin }
+export const NO_AIR: Air = { drag: false, spin: 'none' }
+export const STILL_AIR: Air = { drag: true, spin: 'none' }
+
+export function airText(air: Air) {
+  if (!air.drag && air.spin === 'none') return 'No air drag or spin is modeled.'
+  const parts = [air.drag ? 'air drag' : '', air.spin === 'none' ? '' : `${air.spin} (Magnus lift and the kick off the bounce)`]
+  return `The prediction includes ${parts.filter(Boolean).join(' and ')}.`
+}
 
 let loading: Promise<Rapier> | null = null
 
@@ -36,6 +52,7 @@ export async function predictFlight(
   preset: CourtPreset,
   start: { t: number; p: Vec3; v: Vec3 },
   seconds = 2,
+  air: Air = STILL_AIR,
 ): Promise<Prediction> {
   const RAPIER = await loadRapier()
   const { widthMeters: width, lengthMeters: length } = COURT_PRESETS[preset]
@@ -67,12 +84,44 @@ export async function predictFlight(
         obstacles.set(stumps.handle, 'stumps')
       }
     }
+    const across = Math.hypot(start.v.x, start.v.y)
+    // Topspin turns the ball over in the direction it travels, like rolling; slice turns it back.
+    const spinRate = air.spin === 'none' || across < 0.1 ? 0 : air.spin === 'topspin' ? SPIN_RATE.topspin : -SPIN_RATE.slice
     const body = world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(start.p.x, start.p.y, Math.max(radius, start.p.z))
         .setLinvel(start.v.x, start.v.y, start.v.z)
+        .setAngvel({ x: (-start.v.y / (across || 1)) * spinRate, y: (start.v.x / (across || 1)) * spinRate, z: 0 })
         .setCcdEnabled(true),
     )
+    const area = Math.PI * radius * radius
+    const dragPerSpeed2 = air.drag ? (0.5 * AIR_DENSITY * DRAG_COEFFICIENT[preset] * area) / BALL_MASS[preset] : 0
+    const liftPerSpeed2 = (0.5 * AIR_DENSITY * area) / BALL_MASS[preset]
+    const pushAir = () => {
+      const v = body.linvel()
+      const speed = Math.hypot(v.x, v.y, v.z)
+      if (speed < 0.1) return
+      let ax = -dragPerSpeed2 * speed * v.x
+      let ay = -dragPerSpeed2 * speed * v.y
+      let az = -dragPerSpeed2 * speed * v.z
+      const w = body.angvel()
+      const rate = Math.hypot(w.x, w.y, w.z)
+      if (spinRate !== 0 && rate > 1) {
+        const ratio = (radius * rate) / speed
+        const lift = (liftPerSpeed2 * speed * speed * ratio) / (2.022 * ratio + 0.981)
+        const cx = w.y * v.z - w.z * v.y
+        const cy = w.z * v.x - w.x * v.z
+        const cz = w.x * v.y - w.y * v.x
+        const size = Math.hypot(cx, cy, cz)
+        if (size > 1e-9) {
+          ax += (lift * cx) / size
+          ay += (lift * cy) / size
+          az += (lift * cz) / size
+        }
+      }
+      const kick = body.mass() * STEP_SECONDS
+      body.applyImpulse({ x: ax * kick, y: ay * kick, z: az * kick }, true)
+    }
     const ball = world.createCollider(
       RAPIER.ColliderDesc.ball(radius)
         .setRestitution(restitution)
@@ -84,6 +133,7 @@ export async function predictFlight(
     const prediction: Prediction = { path: [{ t: start.t, p: start.p }], bounces: [], obstacle: null }
     const steps = Math.round(seconds / STEP_SECONDS)
     for (let index = 1; index <= steps; index += 1) {
+      if (dragPerSpeed2 > 0 || spinRate !== 0) pushAir()
       world.step(queue)
       const t = start.t + index * STEP_SECONDS
       const at = body.translation()

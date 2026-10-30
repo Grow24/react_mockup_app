@@ -3,7 +3,9 @@ import type { BallTrack, CourtCalibration } from '../../shared/contracts.ts'
 import { courtFor, deviceId as ownDeviceId } from '../session/api'
 import type { MediaAsset } from '../types'
 import { courtFitsTrack } from '../vision/ball'
-import { predictFlight, type Prediction } from '../vision/physics'
+import { airFor, readAirChoice } from '../vision/air'
+import { airText, predictFlight, type Prediction } from '../vision/physics'
+import { AirSelect } from './AirSelect'
 import { ballisticEnd, triangulateTake, type TakeView, type TriangulatedPoint } from '../vision/triangulate'
 import { describeSpot, PREDICT_SECONDS, predictionText, type PathSample } from '../vision/flightText'
 import { FlightView } from './BallFlight'
@@ -77,22 +79,25 @@ export function TakePanel({
   const bounceSpots = useMemo(() => result?.bounces.map((bounce) => bounce.p) ?? [], [result])
   const cameraSpots = useMemo(() => result?.cameras.map((camera) => camera.position) ?? [], [result])
   const preset = views[0]?.court.preset ?? 'tennis-doubles'
-  const [predicted, setPredicted] = useState<{ from: NonNullable<typeof end>; prediction: Prediction } | null>(null)
+  const callArea = views[0]?.court.callArea
+  const [airId, setAirId] = useState(() => readAirChoice(preset))
+  const air = airFor(preset, airId)
+  const [predicted, setPredicted] = useState<{ from: NonNullable<typeof end>; air: typeof air; prediction: Prediction } | null>(null)
 
   useEffect(() => {
     if (!end) return
     let current = true
-    predictFlight(preset, end, PREDICT_SECONDS)
+    predictFlight(preset, end, PREDICT_SECONDS, air)
       .then((prediction) => {
-        if (current) setPredicted({ from: end, prediction })
+        if (current) setPredicted({ from: end, air, prediction })
       })
       .catch((error) => console.error(error))
     return () => {
       current = false
     }
-  }, [end, preset])
+  }, [end, preset, air])
 
-  const prediction = predicted && predicted.from === end ? predicted.prediction : null
+  const prediction = predicted && predicted.from === end && predicted.air === air ? predicted.prediction : null
 
   return (
     <section className="still-pose ball-panel" aria-label="Multi-camera take">
@@ -135,21 +140,23 @@ export function TakePanel({
             ))}
             {result.bounces.map((bounce, index) => (
               <li key={bounce.t}>
-                Bounce {index + 1} at {bounce.t.toFixed(2)} s: {describeSpot(preset, bounce.p)}
+                Bounce {index + 1} at {bounce.t.toFixed(2)} s: {describeSpot(preset, bounce.p, callArea)}
               </li>
             ))}
           </ul>
           <FlightView
             preset={preset}
+            callArea={callArea}
             paths={paths}
             bounces={bounceSpots}
             prediction={prediction}
             cameras={cameraSpots}
           />
-          {prediction ? <p className="note">{predictionText(preset, prediction)}</p> : null}
+          <AirSelect preset={preset} value={airId} onChange={setAirId} />
+          {prediction ? <p className="note">{predictionText(preset, prediction, callArea)}</p> : null}
           <p className="muted">
             Gold is where the cameras saw the ball, teal is the Rapier prediction after the take, and the white
-            dots are the cameras.
+            dots are the cameras. {airText(air)}
           </p>
         </>
       ) : null}

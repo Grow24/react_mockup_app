@@ -1,4 +1,5 @@
-import { COURT_PRESETS, type BallPoint, type BallTrack, type CourtCalibration, type CourtPreset } from '../../shared/contracts.ts'
+import type { BallPoint, BallTrack, CourtCalibration, CourtPreset } from '../../shared/contracts.ts'
+import { courtArea, courtWorldPoints } from '../../shared/court.ts'
 
 export type Vec3 = { x: number; y: number; z: number }
 
@@ -12,10 +13,15 @@ const BOUNCE_WEIGHT = 200
 const POOR_FIT_FLOOR_PX = 4
 const BEHIND_CAMERA_PX = 1000
 const MAX_FLIGHT_SECONDS = 4
+// At 30 frames per second a long lob is still one flight, while the search stays quick.
+const MAX_FLIGHT_POINTS = 90
 // Faster than any tennis serve or cricket delivery.
 const MAX_SPEED = 75
 const BOUNCE_PRIOR_WEIGHT = 1.5
 const BOUNCE_KEEPS_HORIZONTAL = 0.8
+// A far, short flight seen by one camera barely shows gravity's curve, so its distance and height
+// are guesses. Such a flight is listed but not drawn.
+const MAX_HEIGHT_SIGMA = 0.5
 
 const dot = (a: Vec3, b: Vec3) => a.x * b.x + a.y * b.y + a.z * b.z
 const scale = (a: Vec3, k: number): Vec3 => ({ x: a.x * k, y: a.y * k, z: a.z * k })
@@ -55,20 +61,10 @@ export function solveLinear(matrix: number[][], rhs: number[]): number[] | null 
 }
 
 // World meters: x from the left line, y from the near line, z up from the ground.
-export function courtCorners(preset: CourtPreset) {
-  const { widthMeters: w, lengthMeters: l } = COURT_PRESETS[preset]
-  return [
-    { x: 0, y: 0 },
-    { x: w, y: 0 },
-    { x: w, y: l },
-    { x: 0, y: l },
-  ]
-}
-
 export function courtHomography(court: CourtCalibration): number[] | null {
   const rows: number[][] = []
   const rhs: number[] = []
-  courtCorners(court.preset).forEach((world, index) => {
+  courtWorldPoints(court).forEach((world, index) => {
     const image = court.imagePoints[index]!
     rows.push([world.x, world.y, 1, 0, 0, 0, -image.x * world.x, -image.x * world.y])
     rhs.push(image.x)
@@ -105,10 +101,15 @@ export function groundFromImage(court: CourtCalibration) {
   }
 }
 
-// Lines are part of the court, so a ball touching the line is in.
-export function lineCall(preset: CourtPreset, spot: { x: number; y: number }, radius = BALL_RADIUS[preset]): 'in' | 'out' {
-  const { widthMeters, lengthMeters } = COURT_PRESETS[preset]
-  const inside = spot.x >= -radius && spot.y >= -radius && spot.x <= widthMeters + radius && spot.y <= lengthMeters + radius
+// Lines are part of the area they enclose, so a ball touching the line is in.
+export function lineCall(
+  preset: CourtPreset,
+  spot: { x: number; y: number },
+  areaId?: string,
+  radius = BALL_RADIUS[preset],
+): 'in' | 'out' {
+  const area = courtArea(preset, areaId)
+  const inside = spot.x >= area.x0 - radius && spot.y >= area.y0 - radius && spot.x <= area.x1 + radius && spot.y <= area.y1 + radius
   return inside ? 'in' : 'out'
 }
 
@@ -196,6 +197,7 @@ export type Flight = {
   p0: Vec3
   v0: Vec3
   rmsPx: number
+  heightSigma: number
   observed: number
   startBounce: number | null
   endBounce: number | null
@@ -224,7 +226,7 @@ type Observation = { t: number; u: number; v: number }
 
 export type FlightBreak = { t: number; bounce: boolean }
 
-type Chain = { refs: number[]; params: number[]; rms: number[]; cost: number }
+type Chain = { refs: number[]; params: number[]; rms: number[]; cost: number; normal: number[][] }
 
 function chainState(chain: { refs: number[]; params: number[] }, index: number, t: number): Vec3 {
   const p = chain.params
@@ -258,8 +260,9 @@ export function solveChain(
   const refs = groups.map((group) => group[0]!.t)
   let depths = groups.map((group) => group.map(() => 1))
   let params: number[] | null = null
+  let normal: number[][] = []
   for (let pass = 0; pass < passes; pass += 1) {
-    const normal = Array.from({ length: size }, () => new Array<number>(size).fill(0))
+    normal = Array.from({ length: size }, () => new Array<number>(size).fill(0))
     const rhs = new Array<number>(size).fill(0)
     const add = (entries: [number, number][], value: number) => {
       for (const [i, a] of entries) {
@@ -346,7 +349,20 @@ export function solveChain(
     cost += squared
     rms.push(Math.sqrt(squared / groups[k]!.length))
   }
-  return { refs, params, rms, cost }
+  return { refs, params, rms, cost, normal }
+}
+
+// One standard deviation of a flight's height at the middle of what was seen, with the image rows in pixels.
+function heightSigma(chain: Chain, index: number, group: Observation[]) {
+  const middle = (group[0]!.t + group[group.length - 1]!.t) / 2
+  const pick = new Array<number>(chain.params.length).fill(0)
+  pick[index * 6 + 2] = 1
+  pick[index * 6 + 5] = middle - chain.refs[index]!
+  const solved = solveLinear(chain.normal, pick)
+  if (!solved) return Number.POSITIVE_INFINITY
+  const variance = pick.reduce((sum, value, i) => sum + value * solved[i]!, 0)
+  const noisePx = Math.max(1, chain.rms[index]!)
+  return noisePx * Math.sqrt(Math.max(0, variance))
 }
 
 function splitOnGaps(points: BallPoint[]) {
@@ -397,7 +413,7 @@ function segment(camera: CourtCamera, observations: Observation[], targetPx: num
   best[0] = 0
   for (let end = 1; end <= count; end += 1) {
     for (let start = end - 1; start >= 0; start -= 1) {
-      if (observations[end - 1]!.t - observations[start]!.t > MAX_FLIGHT_SECONDS) break
+      if (observations[end - 1]!.t - observations[start]!.t > MAX_FLIGHT_SECONDS || end - start > MAX_FLIGHT_POINTS) break
       const length = end - start
       const aside = best[start]! + asideCost * length + penalty
       if (aside < best[end]!) {
@@ -560,7 +576,11 @@ function plausible(flight: Flight, limitPx: number) {
   const lowest = Math.min(positionAt(flight, flight.from).z, positionAt(flight, flight.to).z)
   const v = velocityAt(flight, flight.from)
   return (
-    flight.rmsPx <= limitPx && lowest > -0.5 && peakHeight(flight) < 40 && Math.hypot(v.x, v.y, v.z) <= MAX_SPEED
+    flight.rmsPx <= limitPx &&
+    flight.heightSigma <= MAX_HEIGHT_SIGMA &&
+    lowest > -0.5 &&
+    peakHeight(flight) < 40 &&
+    Math.hypot(v.x, v.y, v.z) <= MAX_SPEED
   )
 }
 
@@ -587,6 +607,7 @@ export function fitFlights(track: BallTrack, court: CourtCalibration): FlightFit
         p0: state,
         v0: { x: chain.params[k * 6 + 3]!, y: chain.params[k * 6 + 4]!, z: chain.params[k * 6 + 5]! },
         rmsPx: chain.rms[k]!,
+        heightSigma: heightSigma(chain, k, group),
         observed: group.length,
         startBounce: previous?.bounce ? previous.t : null,
         endBounce: next?.bounce ? next.t : null,
@@ -612,9 +633,22 @@ export function fitFlights(track: BallTrack, court: CourtCalibration): FlightFit
       else skipped += run.length
       run = []
     }
-    for (const part of segment(camera, observations, targetPx, limitPx)) {
+    const parts = segment(camera, observations, targetPx, limitPx)
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = parts[index]!
       const group = part.observations
       if (!part.flight) {
+        const next = parts[index + 1]
+        const joined = next?.flight ? [...group, ...next.observations] : null
+        if (joined && continues(camera, run, joined, model, limitPx)) {
+          run.push(joined)
+          index += 1
+          continue
+        }
+        if (continues(camera, run, group, model, limitPx)) {
+          run.push(group)
+          continue
+        }
         flush()
         skipped += 1
         continue
@@ -630,7 +664,25 @@ export function fitFlights(track: BallTrack, court: CourtCalibration): FlightFit
     }
     flush()
   }
+
   return { camera, flights, skipped }
+}
+
+// Right after a bounce, one camera can see a short flight that fits no physical path on its own;
+// tied to the flight before it, the shared point and the ground fix where it is. A held ball barely
+// moves in the image, so it is never taken for such a flight.
+function continues(camera: CourtCamera, run: Observation[][], group: Observation[], model: BounceModel, limitPx: number) {
+  if (run.length === 0 || group.length < MIN_FLIGHT_POINTS) return false
+  const pair = [run[run.length - 1]!, group]
+  const moves = (piece: Observation[]) => Math.hypot(piece.at(-1)!.u - piece[0]!.u, piece.at(-1)!.v - piece[0]!.v) >= limitPx / 2
+  if (!pair.every(moves)) return false
+  const first = group[0]!
+  const last = group[group.length - 1]!
+  const breaks = classifyBreaks(camera, pair, model)
+  if (!breaks[0]?.bounce) return false
+  const chain = solveChain(camera, pair, breaks, model)
+  if (!chain || !(chain.rms[1]! <= limitPx) || !(chain.rms[0]! <= limitPx)) return false
+  return physical(chain, 1, first.t, last.t)
 }
 
 export function flightBounces(flights: Flight[]) {

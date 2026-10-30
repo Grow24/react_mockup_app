@@ -33,7 +33,20 @@ export default defineConfig({
       ],
     },
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 1600 } } }],
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 1600 } } },
+    // Safari's engine: only the isolation check, since WebKit has no fake camera. It needs system
+    // libraries (npx playwright install --with-deps webkit), so it runs in CI or when asked for.
+    ...(process.env.CI || process.env.PBMP_E2E_WEBKIT
+      ? [
+          {
+            name: 'webkit',
+            testMatch: 'isolation.spec.ts',
+            use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 1600 }, permissions: [], launchOptions: { args: [] } },
+          },
+        ]
+      : []),
+  ],
   webServer: {
     command: `npx vite --host 127.0.0.1 --port ${E2E_PORT} --strictPort`,
     url: `http://127.0.0.1:${E2E_PORT}/api/health`,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import { after, before, describe, it } from 'node:test'
-import type { SessionDetail, TrainingSet, Workout } from '../../shared/contracts.ts'
+import { BALL_TRACK_LIMIT, type SessionDetail, type TrainingSet, type Workout } from '../../shared/contracts.ts'
 import { json, send, startServer, uuid, type TestServer } from '../helpers/server.ts'
 
 const JPEG = Buffer.from(
@@ -89,10 +89,24 @@ describe('sessions and media', () => {
     const court = { preset: 'tennis-doubles', assetId, deviceId, sourceWidth: 640, sourceHeight: 360, imagePoints: [{ x: 1, y: 2 }, { x: 3, y: 4 }, { x: 5, y: 6 }, { x: 7, y: 8 }] }
     const withCourt = await json<SessionDetail>(call('PUT', `/api/sessions/${session.id}/court`, court))
     assert.equal(withCourt.body.courts[0]!.deviceId, deviceId)
+    const half = { ...court, landmarks: ['singles-near-left', 'singles-near-right', 'service-near-right', 'service-near-left'], callArea: 'singles' }
+    const withHalf = await json<SessionDetail>(call('PUT', `/api/sessions/${session.id}/court`, half))
+    assert.deepEqual(withHalf.body.courts[0]!.landmarks, half.landmarks)
+    assert.equal(withHalf.body.courts[0]!.callArea, 'singles')
+    const inLine = { ...court, landmarks: ['doubles-near-left', 'center-mark-near', 'doubles-near-right', 'tee-far'] }
+    assert.equal((await call('PUT', `/api/sessions/${session.id}/court`, inLine)).status, 400)
+    assert.equal((await call('PUT', `/api/sessions/${session.id}/court`, { ...court, callArea: 'pitch' })).status, 400)
+    await call('PUT', `/api/sessions/${session.id}/court`, court)
     const track = { assetId, modelId: 'yolov8n-coco-onnx', sourceWidth: 640, sourceHeight: 360, sampleFps: 10, duration: 1, createdAt: 1, points: [{ t: 0, x: 1, y: 2, radius: 3, score: 0.5, bounce: true }], live: true }
     const withTrack = await json<SessionDetail>(call('PUT', `/api/assets/${assetId}/ball-track`, track))
     assert.equal(withTrack.body.ballTracks[0]!.live, true)
     assert.equal((await call('PUT', `/api/assets/${assetId}/ball-track`, { ...track, sampleFps: 0 })).status, 400)
+    const long = Array.from({ length: BALL_TRACK_LIMIT }, (_, index) => ({ t: index / 30, x: 320.5, y: 180.25, radius: 12.5, score: 0.875 }))
+    const longTrack = { ...track, sampleFps: 30, duration: BALL_TRACK_LIMIT / 30, live: false, points: long }
+    const saved = await json<SessionDetail>(call('PUT', `/api/assets/${assetId}/ball-track`, longTrack))
+    assert.equal(saved.status, 200, '11 minutes at 30 frames per second fits')
+    assert.equal(saved.body.ballTracks[0]!.points.length, BALL_TRACK_LIMIT)
+    assert.equal((await call('PUT', `/api/assets/${assetId}/ball-track`, { ...longTrack, points: [...long, long[0]] })).status, 400)
 
     assert.equal((await call('DELETE', `/api/assets/${assetId}`)).status, 200)
     const after = await json<SessionDetail>(fetch(`${server.base}/api/sessions/${session.id}`, withKey()))

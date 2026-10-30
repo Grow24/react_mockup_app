@@ -149,10 +149,14 @@ export type CourtCalibration = {
   sourceWidth: number
   sourceHeight: number
   imagePoints: CourtPoint[]
+  // Ids from COURT_LANDMARKS in shared/court.ts, one per image point. Missing means the outer corners.
+  landmarks?: string[]
+  // An id from COURT_AREAS: the part of the court that counts as in.
+  callArea?: string
 }
 
 export const COURT_PRESETS: Record<CourtPreset, { label: string; widthMeters: number; lengthMeters: number }> = {
-  'tennis-doubles': { label: 'Tennis doubles', widthMeters: 10.97, lengthMeters: 23.77 },
+  'tennis-doubles': { label: 'Tennis court', widthMeters: 10.97, lengthMeters: 23.77 },
   'cricket-pitch': { label: 'Cricket pitch', widthMeters: 3.05, lengthMeters: 20.12 },
 }
 
@@ -179,7 +183,8 @@ export type BallTrack = {
   live?: boolean
 }
 
-export const BALL_TRACK_LIMIT = 5000
+// 11 minutes at 30 frames per second.
+export const BALL_TRACK_LIMIT = 20000
 
 export type ExerciseKind = 'strength' | 'bodyweight' | 'cardio' | 'timed'
 

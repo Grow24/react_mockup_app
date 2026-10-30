@@ -1,5 +1,8 @@
-import type { CourtPoint, CourtPreset } from '../../shared/contracts.ts'
-import { courtMeters, destinationCorners } from './court.ts'
+import type { CourtCalibration, CourtPoint } from '../../shared/contracts.ts'
+import { courtLines, courtWorldPoints } from '../../shared/court.ts'
+import { courtMeters, courtPixelSize, mapPixel } from './court.ts'
+
+type CourtPlaneInput = Pick<CourtCalibration, 'preset' | 'landmarks' | 'imagePoints'>
 
 const OPENCV_URL = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js'
 
@@ -46,6 +49,7 @@ export function loadOpenCv() {
       const script = document.createElement('script')
       script.src = OPENCV_URL
       script.async = true
+      script.crossOrigin = 'anonymous'
       script.onerror = () => {
         pending = null
         reject(new Error('OpenCV.js could not be downloaded.'))
@@ -77,13 +81,17 @@ function flat(points: CourtPoint[]) {
   return points.flatMap((point) => [point.x, point.y])
 }
 
-export async function projectToCourt(preset: CourtPreset, imagePoints: CourtPoint[], points: CourtPoint[]) {
+function mapPoints(court: Pick<CourtCalibration, 'preset' | 'landmarks'>) {
+  return courtWorldPoints(court).map((world) => mapPixel(court.preset, world))
+}
+
+export async function projectToCourt(court: CourtPlaneInput, points: CourtPoint[]) {
   const { cv } = await loadOpenCv()
   if (points.length === 0) return []
   const created: CvMat[] = []
   try {
-    const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(imagePoints))
-    const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(destinationCorners(preset)))
+    const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(court.imagePoints))
+    const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(mapPoints(court)))
     created.push(srcPts, dstPts)
     const matrix = cv.getPerspectiveTransform(srcPts, dstPts)
     created.push(matrix)
@@ -103,26 +111,24 @@ export async function projectToCourt(preset: CourtPreset, imagePoints: CourtPoin
 export async function renderCourt(
   image: HTMLImageElement,
   canvas: HTMLCanvasElement,
-  preset: CourtPreset,
+  court: CourtPlaneInput,
   sourceWidth: number,
   sourceHeight: number,
-  imagePoints: CourtPoint[],
   markers: { label: string; point: CourtPoint }[],
   isCurrent: () => boolean,
 ) {
   const { cv } = await loadOpenCv()
   if (!isCurrent() || image.naturalWidth < 2 || image.naturalHeight < 2) return []
+  const preset = court.preset
   const scaleX = image.naturalWidth / sourceWidth
   const scaleY = image.naturalHeight / sourceHeight
-  const scaledPoints = imagePoints.map((point) => ({ x: point.x * scaleX, y: point.y * scaleY }))
-  const dstSize = destinationCorners(preset)
-  const width = Math.round(dstSize[1]?.x ?? 2)
-  const height = Math.round(dstSize[0]?.y ?? 2)
+  const scaledPoints = court.imagePoints.map((point) => ({ x: point.x * scaleX, y: point.y * scaleY }))
+  const { width, height } = courtPixelSize(preset)
   const created: CvMat[] = []
   const lines: string[] = []
   try {
     const srcPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(scaledPoints))
-    const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(dstSize))
+    const dstPts = cv.matFromArray(4, 1, cv.CV_32FC2, flat(mapPoints(court)))
     created.push(srcPts, dstPts)
     const matrix = cv.getPerspectiveTransform(srcPts, dstPts)
     created.push(matrix)
@@ -135,6 +141,19 @@ export async function renderCourt(
     cv.imshow(canvas, warped)
     const context = canvas.getContext('2d')
     if (!context) return lines
+    // Where the court lines should be: if the photo's lines sit under them, the points were clicked well.
+    context.strokeStyle = 'rgba(243, 211, 138, 0.85)'
+    context.lineWidth = 1.5
+    for (const line of courtLines(preset)) {
+      const from = mapPixel(preset, line.from)
+      const to = mapPixel(preset, line.to)
+      context.setLineDash(line.dashed ? [5, 5] : [])
+      context.beginPath()
+      context.moveTo(from.x, from.y)
+      context.lineTo(to.x, to.y)
+      context.stroke()
+    }
+    context.setLineDash([])
     context.font = '13px "Avenir Next", "Segoe UI", sans-serif'
     for (const marker of markers) {
       const scaled = { x: marker.point.x * scaleX, y: marker.point.y * scaleY }
