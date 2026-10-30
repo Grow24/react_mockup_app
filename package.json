@@ -11,6 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
     "@mediapipe/tasks-vision": "^1.2.0",
     "onnxruntime-web": "^1.31.1",
     "react": "^19.3.1",

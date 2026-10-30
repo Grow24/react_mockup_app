@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { BallPoint, BallTrack, CourtCalibration, CourtPoint, CourtPreset } from '../../shared/contracts.ts'
+import { BallFlight } from './BallFlight'
 import { courtFitsTrack, groundPoints, pointAt, trailAt } from '../vision/ball'
 import { BALL_SAMPLE_FPS, trackBall } from '../vision/ballTracker'
 import { courtMeters, courtPixelSize } from '../vision/court'
@@ -336,7 +337,10 @@ export function BallPanel({
               shape from this video. Save a frame from this video and mark the court on it.
             </p>
           ) : (
-            <BallCourtMap track={track} court={court} />
+            <>
+              <BallCourtMap track={track} court={court} />
+              <BallFlight track={track} court={court} />
+            </>
           )}
         </>
       ) : null}

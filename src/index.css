@@ -224,6 +224,8 @@ h1, h2, h3 {
   touch-action: none;
 }
 
+.flight-view { height: 360px; }
+
 .skeleton-view canvas {
   display: block;
   width: 100%;
