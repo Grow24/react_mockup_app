@@ -181,6 +181,78 @@ export type BallTrack = {
 
 export const BALL_TRACK_LIMIT = 5000
 
+export type ExerciseKind = 'strength' | 'bodyweight' | 'cardio' | 'timed'
+
+export type Exercise = {
+  id: string
+  name: string
+  kind: ExerciseKind
+  muscles: string[]
+  equipment: string
+  cue: string
+  builtIn?: boolean
+}
+
+export type WorkoutSet = {
+  id: string
+  reps?: number
+  weightKg?: number
+  seconds?: number
+  meters?: number
+  rpe?: number
+  done: boolean
+  doneAt?: number
+}
+
+export type WorkoutEntry = {
+  id: string
+  exerciseId: string
+  sets: WorkoutSet[]
+  note?: string
+}
+
+export type Workout = {
+  id: string
+  name: string
+  startedAt: number
+  finishedAt?: number
+  updatedAt: number
+  entries: WorkoutEntry[]
+  note?: string
+}
+
+export type WorkoutBook = {
+  workouts: Workout[]
+  exercises: Exercise[]
+}
+
+export const WORKOUT_LIMITS = { entries: 60, sets: 60, text: 200, workouts: 5000, exercises: 500 } as const
+
+// A labeled box in a training image, in that image's pixels.
+export type TrainingBox = { classId: number; x: number; y: number; width: number; height: number }
+
+export type TrainingSplit = 'train' | 'val'
+
+export type TrainingImage = {
+  id: string
+  sessionId: string
+  sourceAssetId?: string
+  frameTime?: number
+  width: number
+  height: number
+  createdAt: number
+  boxes: TrainingBox[]
+  split: TrainingSplit
+  fileUrl: string
+}
+
+export type TrainingSet = {
+  classes: string[]
+  images: TrainingImage[]
+}
+
+export const TRAINING_LIMITS = { classes: 100, boxes: 300, images: 5000, imageBytes: 20 * 1024 * 1024 } as const
+
 export type SessionDetail = CaptureSession & {
   assets: MediaAssetRecord[]
   court: CourtCalibration | null

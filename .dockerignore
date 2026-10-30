@@ -6,3 +6,4 @@ server-dist
 .vscode
 .idea
 *.local
+clients

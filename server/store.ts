@@ -13,6 +13,11 @@ import {
   type CourtCalibration,
   type CustomModel,
   type Device,
+  type Exercise,
+  type TrainingBox,
+  type TrainingImage,
+  type TrainingSplit,
+  type Workout,
   type InferenceResult,
   type MediaAssetRecord,
   type SessionDetail,
@@ -82,6 +87,33 @@ const schema = `
     ball_classes_json TEXT NOT NULL,
     byte_length INTEGER NOT NULL,
     created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS workouts (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    workout_json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS exercises (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    exercise_json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS training_sets (
+    session_id TEXT PRIMARY KEY,
+    classes_json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS training_images (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    source_asset_id TEXT,
+    frame_time REAL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    boxes_json TEXT NOT NULL,
+    split TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS takes (
     id TEXT PRIMARY KEY,
@@ -427,6 +459,178 @@ export async function deleteModel(id: string) {
   database().prepare('DELETE FROM custom_models WHERE id = ?').run(id)
   await unlink(mediaPath(id)).catch(() => undefined)
   return getSession(model.sessionId)
+}
+
+export function readWorkoutBook(sessionId: string) {
+  if (!sessionById(sessionId)) return undefined
+  const rows = database()
+    .prepare('SELECT id, deleted, workout_json FROM workouts WHERE session_id = ? ORDER BY updated_at DESC')
+    .all(sessionId) as { id: string; deleted: number; workout_json: string }[]
+  const workouts: Workout[] = []
+  const deleted: string[] = []
+  for (const row of rows) {
+    if (row.deleted) deleted.push(row.id)
+    else workouts.push(JSON.parse(row.workout_json) as Workout)
+  }
+  const exercises = (
+    database().prepare('SELECT exercise_json FROM exercises WHERE session_id = ?').all(sessionId) as { exercise_json: string }[]
+  ).map((row) => JSON.parse(row.exercise_json) as Exercise)
+  return { workouts, exercises, deleted }
+}
+
+type StoredWorkout = { session_id: string; updated_at: number; deleted: number; workout_json: string }
+
+function storedWorkout(id: string) {
+  return database().prepare('SELECT session_id, updated_at, deleted, workout_json FROM workouts WHERE id = ?').get(id) as
+    | StoredWorkout
+    | undefined
+}
+
+// Two phones can edit the same workout; the newer edit wins and a deletion stays deleted.
+export function saveWorkout(sessionId: string, workout: Workout) {
+  if (!sessionById(sessionId)) return undefined
+  const stored = storedWorkout(workout.id)
+  if (stored && stored.session_id !== sessionId) return 'conflict' as const
+  if (stored && (stored.deleted || stored.updated_at >= workout.updatedAt)) {
+    return stored.deleted ? null : (JSON.parse(stored.workout_json) as Workout)
+  }
+  database()
+    .prepare(
+      `INSERT INTO workouts (id, session_id, updated_at, deleted, workout_json) VALUES (?, ?, ?, 0, ?)
+       ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, workout_json = excluded.workout_json`,
+    )
+    .run(workout.id, sessionId, workout.updatedAt, JSON.stringify(workout))
+  return workout
+}
+
+export function deleteWorkout(sessionId: string, id: string) {
+  if (!sessionById(sessionId)) return undefined
+  const stored = storedWorkout(id)
+  if (stored && stored.session_id !== sessionId) return 'conflict' as const
+  database()
+    .prepare(
+      `INSERT INTO workouts (id, session_id, updated_at, deleted, workout_json) VALUES (?, ?, ?, 1, '{}')
+       ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, deleted = 1, workout_json = '{}'`,
+    )
+    .run(id, sessionId, Date.now())
+  return true
+}
+
+export function saveExercise(sessionId: string, exercise: Exercise) {
+  if (!sessionById(sessionId)) return undefined
+  const stored = database().prepare('SELECT session_id FROM exercises WHERE id = ?').get(exercise.id) as
+    | { session_id: string }
+    | undefined
+  if (stored && stored.session_id !== sessionId) return 'conflict' as const
+  database()
+    .prepare(
+      `INSERT INTO exercises (id, session_id, exercise_json) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET exercise_json = excluded.exercise_json`,
+    )
+    .run(exercise.id, sessionId, JSON.stringify(exercise))
+  return exercise
+}
+
+export function deleteExercise(sessionId: string, id: string) {
+  if (!sessionById(sessionId)) return undefined
+  database().prepare('DELETE FROM exercises WHERE id = ? AND session_id = ?').run(id, sessionId)
+  return true
+}
+
+type TrainingRow = {
+  id: string
+  session_id: string
+  source_asset_id: string | null
+  frame_time: number | null
+  width: number
+  height: number
+  created_at: number
+  boxes_json: string
+  split: string
+}
+
+function toTrainingImage(row: TrainingRow): TrainingImage {
+  const image: TrainingImage = {
+    id: row.id,
+    sessionId: row.session_id,
+    width: row.width,
+    height: row.height,
+    createdAt: row.created_at,
+    boxes: JSON.parse(row.boxes_json) as TrainingBox[],
+    split: row.split === 'val' ? 'val' : 'train',
+    fileUrl: `/api/training-images/${row.id}/file`,
+  }
+  if (row.source_asset_id) image.sourceAssetId = row.source_asset_id
+  if (row.frame_time != null) image.frameTime = row.frame_time
+  return image
+}
+
+export const DEFAULT_CLASSES = ['ball', 'player']
+
+export function readTraining(sessionId: string) {
+  if (!sessionById(sessionId)) return undefined
+  const row = database().prepare('SELECT classes_json FROM training_sets WHERE session_id = ?').get(sessionId) as
+    | { classes_json: string }
+    | undefined
+  const images = (
+    database().prepare('SELECT * FROM training_images WHERE session_id = ? ORDER BY created_at').all(sessionId) as TrainingRow[]
+  ).map(toTrainingImage)
+  return { classes: row ? (JSON.parse(row.classes_json) as string[]) : DEFAULT_CLASSES, images }
+}
+
+export function saveClasses(sessionId: string, classes: string[]) {
+  if (!sessionById(sessionId)) return undefined
+  database()
+    .prepare(
+      'INSERT INTO training_sets (session_id, classes_json) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET classes_json = excluded.classes_json',
+    )
+    .run(sessionId, JSON.stringify(classes))
+  return readTraining(sessionId)
+}
+
+export function readTrainingImage(id: string) {
+  const row = database().prepare('SELECT * FROM training_images WHERE id = ?').get(id) as TrainingRow | undefined
+  return row ? toTrainingImage(row) : undefined
+}
+
+export async function addTrainingImage(
+  sessionId: string,
+  image: Omit<TrainingImage, 'sessionId' | 'fileUrl' | 'createdAt'>,
+  bytes: Buffer,
+) {
+  if (!sessionById(sessionId)) return undefined
+  if (readTrainingImage(image.id)) return 'conflict' as const
+  await writeFile(mediaPath(image.id), bytes)
+  database()
+    .prepare(
+      `INSERT INTO training_images (id, session_id, source_asset_id, frame_time, width, height, created_at, boxes_json, split)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      image.id,
+      sessionId,
+      image.sourceAssetId ?? null,
+      image.frameTime ?? null,
+      image.width,
+      image.height,
+      Date.now(),
+      JSON.stringify(image.boxes),
+      image.split,
+    )
+  return readTrainingImage(image.id)
+}
+
+export function updateTrainingImage(id: string, boxes: TrainingBox[], split: TrainingSplit) {
+  if (!readTrainingImage(id)) return undefined
+  database().prepare('UPDATE training_images SET boxes_json = ?, split = ? WHERE id = ?').run(JSON.stringify(boxes), split, id)
+  return readTrainingImage(id)
+}
+
+export async function deleteTrainingImage(id: string) {
+  if (!readTrainingImage(id)) return false
+  database().prepare('DELETE FROM training_images WHERE id = ?').run(id)
+  await unlink(mediaPath(id)).catch(() => undefined)
+  return true
 }
 
 type TakeRow = { id: string; session_id: string; start_at: number; seconds: number; created_at: number; created_by: string }

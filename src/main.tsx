@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App.tsx'
 import { SessionProvider } from './session/SessionContext.tsx'
 import { AiProvider } from './vision/AiContext.tsx'
+import { WorkoutProvider } from './workout/WorkoutContext.tsx'
 import './index.css'
 
 createRoot(document.getElementById('root')!).render(
@@ -11,7 +12,9 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <SessionProvider>
         <AiProvider>
-          <App />
+          <WorkoutProvider>
+            <App />
+          </WorkoutProvider>
         </AiProvider>
       </SessionProvider>
     </BrowserRouter>

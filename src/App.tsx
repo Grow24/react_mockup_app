@@ -3,6 +3,8 @@ import { Shell } from './components/Shell'
 import { AiProcessing } from './pages/AiProcessing'
 import { CameraExplorer } from './pages/CameraExplorer'
 import { Results } from './pages/Results'
+import { Training } from './pages/Training'
+import { Workouts } from './pages/Workouts'
 
 export default function App() {
   return (
@@ -11,6 +13,8 @@ export default function App() {
         <Route path="/" element={<CameraExplorer />} />
         <Route path="/ai" element={<AiProcessing />} />
         <Route path="/results" element={<Results />} />
+        <Route path="/workouts/*" element={<Workouts />} />
+        <Route path="/training" element={<Training />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Shell>

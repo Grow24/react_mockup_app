@@ -1,0 +1,13 @@
+name: pbmp_client
+description: Dart and Flutter client for the PBMP Camera session API.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  http: ^1.2.0
+
+dev_dependencies:
+  test: ^1.25.0

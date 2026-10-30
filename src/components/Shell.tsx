@@ -6,6 +6,8 @@ const TABS = [
   { to: '/', label: 'Camera', end: true },
   { to: '/ai', label: 'AI', end: false },
   { to: '/results', label: 'Results', end: false },
+  { to: '/workouts', label: 'Workouts', end: false },
+  { to: '/training', label: 'Training', end: false },
 ]
 
 function SessionLine() {

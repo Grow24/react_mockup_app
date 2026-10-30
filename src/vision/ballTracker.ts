@@ -28,14 +28,14 @@ function once(video: HTMLVideoElement, event: string, timeoutMs: number) {
   })
 }
 
-async function seek(video: HTMLVideoElement, t: number) {
+export async function seek(video: HTMLVideoElement, t: number) {
   if (Math.abs(video.currentTime - t) < 1e-3 && video.readyState >= 2) return
   const seeked = once(video, 'seeked', 15000)
   video.currentTime = t
   await seeked
 }
 
-async function openVideo(url: string) {
+export async function openVideo(url: string) {
   const video = document.createElement('video')
   video.muted = true
   video.playsInline = true

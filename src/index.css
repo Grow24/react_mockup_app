@@ -429,6 +429,90 @@ button:focus-visible, a:focus-visible, select:focus-visible {
   outline-offset: 2px;
 }
 
+.sub-tabs { margin: 0 0 16px; }
+.entry { border-top: 1px solid #f0e8de; padding-top: 12px; margin-top: 12px; display: grid; gap: 8px; }
+.entry h4 { margin: 0; font-family: Georgia, "Iowan Old Style", Palatino, serif; font-size: 1.05rem; }
+.workout-name { font-family: Georgia, "Iowan Old Style", Palatino, serif; font-size: 1.15rem; font-weight: 600; }
+.set-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.set-row { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.set-row.set-done .text-input { background: #f3faf9; border-color: #b9ddd8; }
+.set-number { width: 1.5rem; font-weight: 700; color: #5f574e; padding-bottom: 10px; }
+.set-field { display: grid; gap: 2px; width: 92px; }
+.set-field span { font-size: 0.75rem; color: #5f574e; }
+.set-check { display: inline-flex; align-items: center; gap: 6px; padding-bottom: 10px; }
+.pr-badge {
+  flex-basis: 100%;
+  margin-left: 2rem;
+  color: #7a4b06;
+  background: #fbefd2;
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 0.82rem;
+  justify-self: start;
+  width: fit-content;
+}
+.exercise-picker { margin-top: 14px; }
+.pick-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.history-row { list-style: none; display: grid; gap: 8px; }
+.filter-row { flex-wrap: nowrap; margin-bottom: 10px; }
+.filter-row select { width: auto; }
+.rest-bar {
+  position: sticky;
+  bottom: 12px;
+  margin-top: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: #1c1916;
+  color: #f6f1ea;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+.rest-bar strong { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+.rest-bar.rest-done { background: #0f6a64; }
+.timer-face {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 22px 12px;
+  margin-bottom: 12px;
+  border-radius: 14px;
+  background: #161310;
+  color: #f6f1ea;
+}
+.timer-work { background: #0f6a64; }
+.timer-rest { background: #3a3f46; }
+.timer-big { font-size: 3.4rem; font-variant-numeric: tabular-nums; line-height: 1; }
+.timer-phase { font-size: 0.95rem; letter-spacing: 0.04em; }
+.timer-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0 10px; margin-top: 10px; }
+.max-result strong { font-size: 2rem; color: #0f6a64; }
+.max-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-variant-numeric: tabular-nums; }
+.max-table th, .max-table td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #f0e8de; }
+.max-chart { width: 100%; height: auto; background: #fbf8f3; border-radius: 12px; }
+.max-chart .axis { font-size: 10px; fill: #5f574e; }
+
+.labeler { display: grid; gap: 8px; }
+.label-stage { position: relative; width: 100%; background: #161310; border-radius: 12px; overflow: hidden; user-select: none; }
+.label-stage img { display: block; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.label-layer { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
+.label-box { position: absolute; border: 2px solid; box-sizing: border-box; }
+.label-box-on { outline: 2px dashed #fff; outline-offset: 2px; }
+.label-box span { position: absolute; left: -2px; top: -20px; font-size: 11px; font-weight: 700; color: #1c1916; padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
+.class-chips { gap: 6px; }
+.chip { border: 2px solid; background: #fffdf9; border-radius: 999px; padding: 4px 12px; cursor: pointer; }
+.chip-on { background: #1c1916; color: #f6f1ea; }
+.suggest-row select { width: auto; }
+.thumb-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.thumb { position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; padding: 0; border: 2px solid transparent; border-radius: 10px; overflow: hidden; cursor: pointer; background: #161310; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb-on { border-color: #0f6a64; }
+.thumb-count { position: absolute; right: 4px; bottom: 4px; background: #0f6a64; color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 999px; }
+.thumb-empty { background: #5f574e; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+.sub-head { margin: 14px 0 6px; font-family: Georgia, "Iowan Old Style", Palatino, serif; font-size: 1rem; }
+
 @media (max-width: 860px) {
   .topbar, .layout { display: grid; }
   .layout { grid-template-columns: 1fr; }

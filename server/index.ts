@@ -1,4 +1,5 @@
 import { createReadStream, existsSync, statSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
@@ -6,18 +7,32 @@ import { isIP } from 'node:net'
 import { Readable } from 'node:stream'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { DATASET_README, dataYaml, TRAIN_SCRIPT, vocXml, yoloLabel } from './dataset.ts'
+import { uploadToRoboflow } from './roboflow.ts'
+import { zip, type ZipEntry } from './zip.ts'
 import {
   deleteAsset,
   getSession,
   listModels,
   openStore,
   readAssetFile,
+  addTrainingImage,
   createTake,
+  deleteExercise,
+  deleteTrainingImage,
   deleteModel,
+  deleteWorkout,
   latestTake,
   mediaPath,
   readModel,
+  readTraining,
+  readTrainingImage,
+  readWorkoutBook,
+  saveClasses,
+  updateTrainingImage,
+  saveExercise,
   saveModel,
+  saveWorkout,
   updateModel,
   type ModelDetails,
   saveBallTrack,
@@ -29,6 +44,8 @@ import {
 import {
   BALL_TRACK_LIMIT,
   MAX_MODEL_BYTES,
+  TRAINING_LIMITS,
+  WORKOUT_LIMITS,
   TAKE_LEAD_MS,
   TAKE_SECONDS,
   type AiSnapshot,
@@ -38,6 +55,14 @@ import {
   type CourtCalibration,
   type CourtPreset,
   type Device,
+  type Exercise,
+  type ExerciseKind,
+  type TrainingBox,
+  type TrainingImage,
+  type TrainingSplit,
+  type Workout,
+  type WorkoutEntry,
+  type WorkoutSet,
 } from '../shared/contracts.ts'
 
 function listenPort() {
@@ -288,6 +313,121 @@ function asSnapshot(value: unknown): AiSnapshot | null | undefined {
   return next
 }
 
+const SLUG = /^[a-z0-9-]{1,80}$/i
+
+function asClasses(value: unknown) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > TRAINING_LIMITS.classes) return undefined
+  const classes = value.map((item) => (typeof item === 'string' ? item.trim().slice(0, 60) : ''))
+  if (classes.some((name) => !name) || new Set(classes).size !== classes.length) return undefined
+  return classes
+}
+
+// Boxes are clamped into the image; empty or out-of-range ones make the request invalid.
+function asBoxes(value: unknown, width: number, height: number, classCount: number): TrainingBox[] | undefined {
+  if (!Array.isArray(value) || value.length > TRAINING_LIMITS.boxes) return undefined
+  const boxes: TrainingBox[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return undefined
+    const box = item as Partial<TrainingBox>
+    const classId = box.classId
+    if (typeof classId !== 'number' || !Number.isInteger(classId) || classId < 0 || classId >= classCount) return undefined
+    const numbers = [box.x, box.y, box.width, box.height]
+    if (numbers.some((number) => typeof number !== 'number' || !Number.isFinite(number))) return undefined
+    const x = Math.min(width, Math.max(0, box.x!))
+    const y = Math.min(height, Math.max(0, box.y!))
+    const right = Math.min(width, Math.max(0, box.x! + box.width!))
+    const bottom = Math.min(height, Math.max(0, box.y! + box.height!))
+    if (right - x < 1 || bottom - y < 1) return undefined
+    boxes.push({ classId, x, y, width: right - x, height: bottom - y })
+  }
+  return boxes
+}
+
+function asSplit(value: unknown): TrainingSplit | undefined {
+  return value === 'train' || value === 'val' ? value : undefined
+}
+
+function trainingName(image: TrainingImage, index: number) {
+  return `${String(index + 1).padStart(5, '0')}-${image.id.slice(0, 8)}.jpg`
+}
+
+function text(value: unknown) {
+  return typeof value === 'string' ? value.trim().slice(0, WORKOUT_LIMITS.text) : ''
+}
+
+function measure(value: unknown, max: number, integer = false) {
+  if (value == null) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > max) return null
+  if (integer && !Number.isInteger(value)) return null
+  return value
+}
+
+function asWorkoutSet(value: unknown): WorkoutSet | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const set = value as Partial<WorkoutSet>
+  if (typeof set.id !== 'string' || !SLUG.test(set.id) || typeof set.done !== 'boolean') return undefined
+  const next: WorkoutSet = { id: set.id, done: set.done }
+  const fields = [
+    ['reps', 1000, true],
+    ['weightKg', 1000, false],
+    ['seconds', 86_400, false],
+    ['meters', 1_000_000, false],
+    ['rpe', 10, false],
+    ['doneAt', Number.MAX_SAFE_INTEGER, true],
+  ] as const
+  for (const [key, max, integer] of fields) {
+    const read = measure(set[key], max, integer)
+    if (read === null) return undefined
+    if (read !== undefined) next[key] = read
+  }
+  return next
+}
+
+function asWorkout(value: unknown, id: string): Workout | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const workout = value as Partial<Workout>
+  if (workout.id !== id) return undefined
+  const startedAt = measure(workout.startedAt, Number.MAX_SAFE_INTEGER, true)
+  const updatedAt = measure(workout.updatedAt, Number.MAX_SAFE_INTEGER, true)
+  const finishedAt = measure(workout.finishedAt, Number.MAX_SAFE_INTEGER, true)
+  if (startedAt == null || updatedAt == null || finishedAt === null) return undefined
+  if (!Array.isArray(workout.entries) || workout.entries.length > WORKOUT_LIMITS.entries) return undefined
+  const entries: WorkoutEntry[] = []
+  for (const item of workout.entries) {
+    if (!item || typeof item !== 'object') return undefined
+    const entry = item as Partial<WorkoutEntry>
+    if (typeof entry.id !== 'string' || !SLUG.test(entry.id)) return undefined
+    if (typeof entry.exerciseId !== 'string' || !SLUG.test(entry.exerciseId)) return undefined
+    if (!Array.isArray(entry.sets) || entry.sets.length > WORKOUT_LIMITS.sets) return undefined
+    const sets = entry.sets.map(asWorkoutSet)
+    if (sets.some((set) => !set)) return undefined
+    const next: WorkoutEntry = { id: entry.id, exerciseId: entry.exerciseId, sets: sets as WorkoutSet[] }
+    if (text(entry.note)) next.note = text(entry.note)
+    entries.push(next)
+  }
+  const next: Workout = { id, name: text(workout.name) || 'Workout', startedAt, updatedAt, entries }
+  if (finishedAt !== undefined) next.finishedAt = finishedAt
+  if (text(workout.note)) next.note = text(workout.note)
+  return next
+}
+
+const EXERCISE_KINDS: ExerciseKind[] = ['strength', 'bodyweight', 'cardio', 'timed']
+
+function asExercise(value: unknown, id: string): Exercise | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const exercise = value as Partial<Exercise>
+  if (exercise.id !== id || !text(exercise.name) || !EXERCISE_KINDS.includes(exercise.kind as ExerciseKind)) return undefined
+  const muscles = Array.isArray(exercise.muscles) ? exercise.muscles.map(text).filter(Boolean).slice(0, 12) : []
+  return {
+    id,
+    name: text(exercise.name).slice(0, 80),
+    kind: exercise.kind as ExerciseKind,
+    muscles,
+    equipment: text(exercise.equipment).slice(0, 80),
+    cue: text(exercise.cue),
+  }
+}
+
 function asModelDetails(value: unknown): ModelDetails | undefined {
   if (!value || typeof value !== 'object') return undefined
   const details = value as Partial<ModelDetails>
@@ -476,6 +616,224 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     sendJson(res, 200, session)
     return
+  }
+
+  if (parts[0] === 'api' && parts[1] === 'sessions' && isUuid(parts[2] ?? '') && (parts[3] === 'workouts' || parts[3] === 'exercises')) {
+    const sessionId = parts[2]!
+    if (parts[3] === 'workouts' && parts.length === 4 && req.method === 'GET') {
+      const book = readWorkoutBook(sessionId)
+      if (!book) {
+        sendJson(res, 404, { error: 'Session was not found.' })
+        return
+      }
+      sendJson(res, 200, book)
+      return
+    }
+    const id = parts[4] ?? ''
+    if (parts.length !== 5 || (parts[3] === 'workouts' ? !isUuid(id) : !SLUG.test(id))) {
+      sendJson(res, 400, { error: 'The id is not valid.' })
+      return
+    }
+    let result: unknown
+    if (req.method === 'PUT') {
+      const body = await readBody(req)
+      if (!body) {
+        sendJson(res, 413, { error: 'That is too large to save.' })
+        return
+      }
+      const parsed = parts[3] === 'workouts' ? asWorkout(body, id) : asExercise(body, id)
+      if (!parsed) {
+        sendJson(res, 400, { error: parts[3] === 'workouts' ? 'The workout is not valid.' : 'The exercise is not valid.' })
+        return
+      }
+      result =
+        parts[3] === 'workouts' ? saveWorkout(sessionId, parsed as Workout) : saveExercise(sessionId, parsed as Exercise)
+    } else if (req.method === 'DELETE') {
+      result = parts[3] === 'workouts' ? deleteWorkout(sessionId, id) : deleteExercise(sessionId, id)
+    } else {
+      sendJson(res, 405, { error: 'Use PUT or DELETE.' })
+      return
+    }
+    if (result === undefined) {
+      sendJson(res, 404, { error: 'Session was not found.' })
+      return
+    }
+    if (result === 'conflict') {
+      sendJson(res, 409, { error: 'That id belongs to another session.' })
+      return
+    }
+    sendJson(res, 200, { saved: result })
+    return
+  }
+
+  if (parts[0] === 'api' && parts[1] === 'sessions' && isUuid(parts[2] ?? '') && parts[3] === 'training') {
+    const sessionId = parts[2]!
+    const set = readTraining(sessionId)
+    if (!set) {
+      sendJson(res, 404, { error: 'Session was not found.' })
+      return
+    }
+    if (parts.length === 4 && req.method === 'GET') {
+      sendJson(res, 200, set)
+      return
+    }
+    if (parts.length === 5 && parts[4] === 'classes' && req.method === 'PUT') {
+      const body = (await readBody(req)) as { classes?: unknown } | undefined
+      const classes = asClasses(body?.classes)
+      const highest = Math.max(-1, ...set.images.flatMap((image) => image.boxes.map((box) => box.classId)))
+      if (!classes || classes.length <= highest) {
+        sendJson(res, 400, { error: 'Classes must be unique names, and boxes already use the first ' + (highest + 1) + '.' })
+        return
+      }
+      sendJson(res, 200, saveClasses(sessionId, classes))
+      return
+    }
+    if (parts.length === 5 && parts[4] === 'images' && req.method === 'POST') {
+      if (set.images.length >= TRAINING_LIMITS.images) {
+        sendJson(res, 413, { error: `A training set holds up to ${TRAINING_LIMITS.images} images.` })
+        return
+      }
+      const form = await (await formRequest(req)).formData()
+      const file = form.get('file')
+      const metaText = form.get('meta')
+      if (!(file instanceof File) || typeof metaText !== 'string' || file.size > TRAINING_LIMITS.imageBytes) {
+        sendJson(res, 400, { error: 'A JPEG of up to 20 MB and its details are required.' })
+        return
+      }
+      let meta: Record<string, unknown>
+      try {
+        meta = JSON.parse(metaText) as Record<string, unknown>
+      } catch {
+        sendJson(res, 400, { error: 'Image details could not be read.' })
+        return
+      }
+      const width = meta.width
+      const height = meta.height
+      const sizeOk = [width, height].every((value) => typeof value === 'number' && Number.isInteger(value) && value >= 8 && value <= 8000)
+      const boxes = sizeOk ? asBoxes(meta.boxes ?? [], width as number, height as number, set.classes.length) : undefined
+      const split = asSplit(meta.split)
+      const source = meta.sourceAssetId
+      const frameTime = meta.frameTime
+      if (
+        typeof meta.id !== 'string' ||
+        !isUuid(meta.id) ||
+        !boxes ||
+        !split ||
+        (source != null && (typeof source !== 'string' || !isUuid(source))) ||
+        (frameTime != null && !finiteIn(frameTime, 0, 86_400))
+      ) {
+        sendJson(res, 400, { error: 'Image details are not valid.' })
+        return
+      }
+      const bytes = Buffer.from(await file.arrayBuffer())
+      if (bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+        sendJson(res, 400, { error: 'Training images must be JPEG.' })
+        return
+      }
+      const image: Omit<TrainingImage, 'sessionId' | 'fileUrl' | 'createdAt'> = {
+        id: meta.id.toLowerCase(),
+        width: width as number,
+        height: height as number,
+        boxes,
+        split,
+      }
+      if (typeof source === 'string') image.sourceAssetId = source
+      if (typeof frameTime === 'number') image.frameTime = frameTime
+      const saved = await addTrainingImage(sessionId, image, bytes)
+      if (saved === 'conflict') {
+        sendJson(res, 409, { error: 'That image id is already used.' })
+        return
+      }
+      sendJson(res, 200, saved)
+      return
+    }
+    if (parts.length === 5 && parts[4] === 'export' && req.method === 'GET') {
+      const labeledOnly = url.searchParams.get('labeled') === '1'
+      const images = set.images.filter((image) => !labeledOnly || image.boxes.length > 0)
+      const entries: ZipEntry[] = [
+        { name: 'data.yaml', data: Buffer.from(dataYaml(set.classes)) },
+        { name: 'train.py', data: Buffer.from(TRAIN_SCRIPT) },
+        { name: 'README.txt', data: Buffer.from(DATASET_README) },
+      ]
+      for (const [index, image] of images.entries()) {
+        const name = trainingName(image, index)
+        const stored = mediaPath(image.id)
+        if (!existsSync(stored)) continue
+        entries.push({ name: `images/${image.split}/${name}`, data: await readFile(stored) })
+        entries.push({ name: `labels/${image.split}/${name.replace(/\.jpg$/, '.txt')}`, data: Buffer.from(yoloLabel(image.boxes, image.width, image.height)) })
+      }
+      const archive = zip(entries)
+      cors(res)
+      res.writeHead(200, {
+        'Content-Type': 'application/zip',
+        'Content-Length': archive.length,
+        'Content-Disposition': `attachment; filename="pbmp-dataset-${sessionId.slice(0, 8)}.zip"`,
+        'Cache-Control': 'no-store',
+      })
+      res.end(archive)
+      return
+    }
+    if (parts.length === 5 && parts[4] === 'roboflow' && req.method === 'POST') {
+      const body = (await readBody(req)) as { apiKey?: unknown; project?: unknown } | undefined
+      const apiKey = typeof body?.apiKey === 'string' ? body.apiKey.trim() : ''
+      const project = typeof body?.project === 'string' ? body.project.trim().toLowerCase() : ''
+      if (!/^[A-Za-z0-9_-]{8,100}$/.test(apiKey) || !/^[a-z0-9_-]{1,100}$/.test(project)) {
+        sendJson(res, 400, { error: 'Enter a Roboflow API key and the project id from its URL.' })
+        return
+      }
+      const images = []
+      for (const [index, image] of set.images.entries()) {
+        if (image.boxes.length === 0 || !existsSync(mediaPath(image.id))) continue
+        const name = trainingName(image, index)
+        images.push({
+          name,
+          bytes: await readFile(mediaPath(image.id)),
+          split: image.split === 'val' ? ('valid' as const) : ('train' as const),
+          xml: vocXml(name, image, set.classes),
+        })
+      }
+      if (images.length === 0) {
+        sendJson(res, 400, { error: 'Label at least one image first.' })
+        return
+      }
+      sendJson(res, 200, await uploadToRoboflow(apiKey, project, images))
+      return
+    }
+    sendJson(res, 404, { error: 'Not found.' })
+    return
+  }
+
+  if (parts[0] === 'api' && parts[1] === 'training-images' && isUuid(parts[2] ?? '')) {
+    const id = parts[2]!.toLowerCase()
+    const image = readTrainingImage(id)
+    if (!image) {
+      sendJson(res, 404, { error: 'Training image was not found.' })
+      return
+    }
+    if (parts.length === 4 && parts[3] === 'file' && req.method === 'GET') {
+      const stored = mediaPath(id)
+      cors(res)
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': statSync(stored).size, 'Cache-Control': 'public, max-age=31536000, immutable' })
+      await pipeline(createReadStream(stored), res).catch(() => undefined)
+      return
+    }
+    if (parts.length === 3 && req.method === 'PUT') {
+      const body = (await readBody(req)) as { boxes?: unknown; split?: unknown } | undefined
+      const classes = readTraining(image.sessionId)?.classes ?? []
+      const boxes = asBoxes(body?.boxes, image.width, image.height, classes.length)
+      const split = asSplit(body?.split ?? image.split)
+      if (!boxes || !split) {
+        sendJson(res, 400, { error: 'Boxes are not valid.' })
+        return
+      }
+      sendJson(res, 200, updateTrainingImage(id, boxes, split))
+      return
+    }
+    if (parts.length === 3 && req.method === 'DELETE') {
+      await deleteTrainingImage(id)
+      sendJson(res, 200, { ok: true })
+      return
+    }
   }
 
   if (req.method === 'GET' && url.pathname === '/api/fetch-model') {
