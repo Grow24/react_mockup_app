@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { TAKE_SECONDS } from '../../shared/contracts.ts'
 import { useCamera } from '../camera/useCamera'
+import { useSyncedTake } from '../camera/useSyncedTake'
 import { AiControls } from '../components/AiControls'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import { framePath, framePathLabel } from '../camera/webcodecs'
@@ -13,12 +15,20 @@ export function CameraExplorer() {
   const previewRef = useRef<HTMLVideoElement | null>(null)
   const ai = useAi()
   const camera = useCamera(previewRef, ai.readSnapshot)
-  const { assets, storageWarning, noteCameras } = useSession()
+  const { assets, storageWarning, noteCameras, sessionId, backend } = useSession()
   const [frame, setFrame] = useState({ width: 0, height: 0 })
+  const [takeSeconds, setTakeSeconds] = useState<number>(TAKE_SECONDS[0])
   useLiveAnalysis(previewRef, camera.status === 'live' && ai.enabled && ai.status === 'ready')
   const latest = assets[0]
   const previewOn = camera.status === 'live' && !camera.busy
   const showOverlay = !previewOn
+  const take = useSyncedTake({
+    sessionId,
+    online: backend === 'online',
+    live: previewOn,
+    recording: camera.recording,
+    recordTake: camera.recordTake,
+  })
 
   useEffect(() => {
     const video = previewRef.current
@@ -167,6 +177,49 @@ export function CameraExplorer() {
         </div>
 
         <aside className="side">
+          <article className="card">
+            <header className="card-head">
+              <h3>Synced take</h3>
+            </header>
+            <p className="muted">
+              Open the session link from the header on a second phone and start its camera. One press
+              records on every phone with a live camera, starting at the same server time.
+            </p>
+            <label className="field">
+              <span>Length</span>
+              <select
+                value={takeSeconds}
+                disabled={take.busy}
+                onChange={(event) => setTakeSeconds(Number(event.target.value))}
+              >
+                {TAKE_SECONDS.map((seconds) => (
+                  <option key={seconds} value={seconds}>
+                    {seconds} seconds
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="primary"
+              disabled={!previewOn || backend !== 'online' || take.busy || camera.recording}
+              onClick={() => take.start(takeSeconds)}
+            >
+              Start synced take
+            </button>
+            {take.status ? (
+              <p className={take.phase === 'error' ? 'warn' : 'note'} role="status">
+                {take.status}
+              </p>
+            ) : null}
+            <p className="muted">
+              {backend !== 'online'
+                ? 'Synced takes need the server.'
+                : take.clock != null
+                  ? `This phone's clock is matched to the server within about ${take.clock} ms.`
+                  : 'The clock is matched to the server when the camera starts.'}
+            </p>
+          </article>
           <AiControls />
           <article className="card">
             <header className="card-head">

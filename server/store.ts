@@ -16,6 +16,7 @@ import {
   type MediaAssetRecord,
   type SessionDetail,
   type SpatialResult,
+  type Take,
 } from '../shared/contracts.ts'
 
 let mediaDir = path.join(path.resolve(process.cwd(), 'server/data'), 'media')
@@ -64,7 +65,50 @@ const schema = `
     session_id TEXT NOT NULL,
     track_json TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS device_courts (
+    session_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    court_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, device_id)
+  );
+  CREATE TABLE IF NOT EXISTS takes (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    start_at INTEGER NOT NULL,
+    seconds INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    created_by TEXT NOT NULL
+  );
 `
+
+// Columns added after the first release; older databases get them on open.
+const assetColumns = [
+  ['device_id', 'TEXT'],
+  ['take_id', 'TEXT'],
+  ['started_at', 'INTEGER'],
+] as const
+
+function migrate(opened: DatabaseSync) {
+  const present = new Set(
+    (opened.prepare('PRAGMA table_info(assets)').all() as { name: string }[]).map((column) => column.name),
+  )
+  for (const [name, type] of assetColumns) {
+    if (!present.has(name)) opened.exec(`ALTER TABLE assets ADD COLUMN ${name} ${type}`)
+  }
+  opened.exec('BEGIN')
+  try {
+    opened.exec(
+      `INSERT OR IGNORE INTO device_courts (session_id, device_id, court_json, updated_at)
+       SELECT session_id, '', court_json, 0 FROM courts`,
+    )
+    opened.exec('DELETE FROM courts')
+    opened.exec('COMMIT')
+  } catch (error) {
+    opened.exec('ROLLBACK')
+    throw error
+  }
+}
 
 const models: AiModel[] = [
   { id: OBJECT_MODEL_ID, name: 'MediaPipe EfficientDet Lite0', task: 'object-detection' },
@@ -82,6 +126,7 @@ function openAt(DatabaseSyncCtor: typeof import('node:sqlite').DatabaseSync, dir
   mkdirSync(media, { recursive: true })
   const opened = new DatabaseSyncCtor(path.join(dir, 'pbmp.sqlite'))
   opened.exec(schema)
+  migrate(opened)
   const insertModel = opened.prepare(
     'INSERT INTO models (id, name, task) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, task = excluded.task',
   )
@@ -138,6 +183,9 @@ type AssetRow = {
   byte_length: number
   inference_json: string | null
   spatial_json: string | null
+  device_id: string | null
+  take_id: string | null
+  started_at: number | null
 }
 
 function sessionById(id: string) {
@@ -162,7 +210,8 @@ function camerasFor(sessionId: string) {
 function assetsFor(sessionId: string) {
   const rows = database()
     .prepare(
-      `SELECT id, session_id, kind, mime_type, created_at, camera_label, width, height, byte_length, inference_json, spatial_json
+      `SELECT id, session_id, kind, mime_type, created_at, camera_label, width, height, byte_length, inference_json, spatial_json,
+              device_id, take_id, started_at
        FROM assets WHERE session_id = ? ORDER BY created_at DESC`,
     )
     .all(sessionId) as AssetRow[]
@@ -170,7 +219,12 @@ function assetsFor(sessionId: string) {
 }
 
 function toAsset(row: AssetRow): MediaAssetRecord {
+  const extra: Pick<MediaAssetRecord, 'deviceId' | 'takeId' | 'startedAt'> = {}
+  if (row.device_id) extra.deviceId = row.device_id
+  if (row.take_id) extra.takeId = row.take_id
+  if (row.started_at != null) extra.startedAt = row.started_at
   return {
+    ...extra,
     id: row.id,
     sessionId: row.session_id,
     kind: row.kind === 'video' ? 'video' : 'photo',
@@ -189,6 +243,7 @@ function toAsset(row: AssetRow): MediaAssetRecord {
 export function getSession(id: string): SessionDetail | undefined {
   const row = sessionById(id)
   if (!row) return undefined
+  const courts = readCourts(id)
   return {
     id: row.id,
     createdAt: row.created_at,
@@ -196,7 +251,8 @@ export function getSession(id: string): SessionDetail | undefined {
     device: JSON.parse(row.device_json) as Device,
     cameras: camerasFor(id),
     assets: assetsFor(id),
-    court: readCourt(id),
+    court: courts[0] ?? null,
+    courts,
     ballTracks: readBallTracks(id),
   }
 }
@@ -237,33 +293,74 @@ export function saveBallTrack(assetId: string, track: BallTrack | null) {
   return getSession(asset.session_id)
 }
 
-export function readCourt(sessionId: string): CourtCalibration | null {
-  const row = database().prepare('SELECT court_json FROM courts WHERE session_id = ?').get(sessionId) as
-    | { court_json: string }
-    | undefined
-  if (!row) return null
-  try {
-    const court = JSON.parse(row.court_json) as CourtCalibration
-    if (!court || court.imagePoints?.length !== 4) return null
-    return court
-  } catch {
-    return null
+export function readCourts(sessionId: string): CourtCalibration[] {
+  const rows = database()
+    .prepare('SELECT device_id, court_json FROM device_courts WHERE session_id = ? ORDER BY updated_at DESC')
+    .all(sessionId) as { device_id: string; court_json: string }[]
+  const courts: CourtCalibration[] = []
+  for (const row of rows) {
+    try {
+      const court = JSON.parse(row.court_json) as CourtCalibration
+      if (!court || court.imagePoints?.length !== 4) continue
+      const clean: CourtCalibration = {
+        preset: court.preset,
+        assetId: court.assetId,
+        sourceWidth: court.sourceWidth,
+        sourceHeight: court.sourceHeight,
+        imagePoints: court.imagePoints,
+      }
+      if (row.device_id) clean.deviceId = row.device_id
+      courts.push(clean)
+    } catch {
+      // A broken row is skipped; the court can be marked again.
+    }
   }
+  return courts
 }
 
-export function saveCourt(sessionId: string, court: CourtCalibration | null) {
+export function saveCourt(sessionId: string, deviceId: string, court: CourtCalibration | null) {
   if (!sessionById(sessionId)) return undefined
   if (!court) {
-    database().prepare('DELETE FROM courts WHERE session_id = ?').run(sessionId)
+    database().prepare('DELETE FROM device_courts WHERE session_id = ? AND device_id = ?').run(sessionId, deviceId)
   } else {
     database()
       .prepare(
-        'INSERT INTO courts (session_id, court_json) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET court_json = excluded.court_json',
+        `INSERT INTO device_courts (session_id, device_id, court_json, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(session_id, device_id) DO UPDATE SET court_json = excluded.court_json, updated_at = excluded.updated_at`,
       )
-      .run(sessionId, JSON.stringify(court))
+      .run(sessionId, deviceId, JSON.stringify(court), Date.now())
   }
   database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), sessionId)
   return getSession(sessionId)
+}
+
+type TakeRow = { id: string; session_id: string; start_at: number; seconds: number; created_at: number; created_by: string }
+
+function toTake(row: TakeRow): Take {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    startAt: row.start_at,
+    seconds: row.seconds,
+    createdAt: row.created_at,
+    createdBy: row.created_by,
+  }
+}
+
+export function createTake(sessionId: string, take: Omit<Take, 'sessionId'>) {
+  if (!sessionById(sessionId)) return undefined
+  database()
+    .prepare('INSERT INTO takes (id, session_id, start_at, seconds, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(take.id, sessionId, take.startAt, take.seconds, take.createdAt, take.createdBy)
+  return { ...take, sessionId }
+}
+
+export function latestTake(sessionId: string) {
+  if (!sessionById(sessionId)) return undefined
+  const row = database()
+    .prepare('SELECT * FROM takes WHERE session_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get(sessionId) as TakeRow | undefined
+  return row ? toTake(row) : null
 }
 
 export function saveSession(id: string, device: Device) {
@@ -320,6 +417,9 @@ export async function saveAsset(
     width?: number
     height?: number
     snapshot: AiSnapshot | null
+    deviceId?: string
+    takeId?: string
+    startedAt?: number
   },
   bytes: Buffer,
 ) {
@@ -354,8 +454,9 @@ export async function saveAsset(
   try {
     database().prepare(
       `INSERT INTO assets (
-        id, session_id, kind, mime_type, created_at, camera_label, width, height, byte_length, inference_json, spatial_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, session_id, kind, mime_type, created_at, camera_label, width, height, byte_length, inference_json, spatial_json,
+        device_id, take_id, started_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       asset.id,
       sessionId,
@@ -368,6 +469,9 @@ export async function saveAsset(
       bytes.byteLength,
       inference ? JSON.stringify(inference) : null,
       spatial ? JSON.stringify(spatial) : null,
+      asset.deviceId ?? null,
+      asset.takeId ?? null,
+      asset.startedAt ?? null,
     )
     database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), sessionId)
   } catch (error) {

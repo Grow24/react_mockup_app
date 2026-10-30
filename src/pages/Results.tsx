@@ -5,7 +5,9 @@ import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import { BallOverlay, BallPanel } from '../components/BallTracking'
 import { CourtPlane } from '../components/CourtPlane'
 import { SkeletonView } from '../components/SkeletonView'
+import { TakePanel } from '../components/TakePanel'
 import { formatPercent, formatPerformance, formatWhen } from '../format'
+import { courtFor, courtKeyOf } from '../session/api'
 import { useSession } from '../session/context'
 import type { AiSnapshot } from '../types'
 
@@ -23,7 +25,7 @@ export function Results() {
     ready,
     storageWarning,
     backend,
-    court,
+    courts,
     ballTracks,
     addAsset,
     removeAsset,
@@ -39,6 +41,7 @@ export function Results() {
   const poseFrameRef = useRef<HTMLDivElement | null>(null)
   const selected = assets.find((asset) => asset.id === selectedId) ?? assets[0]
   const ballTrack = selected?.kind === 'video' ? (ballTracks[selected.id] ?? null) : null
+  const court = selected ? courtFor(courts, selected.deviceId) : null
 
   useEffect(() => {
     setFrameReady(false)
@@ -60,6 +63,7 @@ export function Results() {
         cameraLabel: selected.cameraLabel,
         width: still.width,
         height: still.height,
+        deviceId: selected.deviceId ?? '',
       })
       setFrameMessage(
         still.path === 'webcodecs'
@@ -128,14 +132,17 @@ export function Results() {
                 <CourtPlane
                   key={selected.id}
                   assetId={selected.id}
+                  deviceId={selected.deviceId}
                   imageUrl={selected.url}
                   alt={`Photo from ${selected.cameraLabel}`}
                   sourceWidth={selected.width}
                   sourceHeight={selected.height}
                   snapshot={selected.snapshot}
                   saved={court}
-                  onSave={setCourt}
-                  onClear={() => setCourt(null)}
+                  onSave={(next) => setCourt(courtKeyOf(next), next)}
+                  onClear={() => {
+                    if (court) setCourt(courtKeyOf(court), null)
+                  }}
                 />
               ) : selected.kind === 'photo' ? (
                 <div className="annotated">
@@ -180,6 +187,10 @@ export function Results() {
                 {selected.width && selected.height ? ` · ${selected.width}×${selected.height}` : ''}
               </figcaption>
             </figure>
+
+            {selected.kind === 'video' && selected.takeId ? (
+              <TakePanel takeId={selected.takeId} assets={assets} courts={courts} ballTracks={ballTracks} />
+            ) : null}
 
             {selected.kind === 'video' ? (
               <BallPanel

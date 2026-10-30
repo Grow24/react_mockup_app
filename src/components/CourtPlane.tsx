@@ -26,6 +26,7 @@ function markerStyle(
 
 export function CourtPlane({
   assetId,
+  deviceId,
   imageUrl,
   alt,
   sourceWidth,
@@ -36,6 +37,7 @@ export function CourtPlane({
   onClear,
 }: {
   assetId: string
+  deviceId?: string
   imageUrl: string
   alt: string
   sourceWidth: number
@@ -92,13 +94,15 @@ export function CourtPlane({
   }, [image, points, preset, snapshot, sourceWidth, sourceHeight])
 
   function publish(nextPoints: CourtPoint[], nextPreset: CourtPreset) {
-    onSave({
+    const court: CourtCalibration = {
       preset: nextPreset,
       assetId,
       sourceWidth,
       sourceHeight,
       imagePoints: nextPoints,
-    })
+    }
+    if (deviceId) court.deviceId = deviceId
+    onSave(court)
   }
 
   function clickImage(event: MouseEvent<HTMLImageElement>) {
@@ -126,7 +130,9 @@ export function CourtPlane({
         plane. {points.length < 4 ? `Next: ${CORNER_LABELS[points.length]}.` : 'All four corners are set.'}
       </p>
       {saved && !owns ? (
-        <p className="muted">Corners were marked on another photo. Mark this photo to replace them.</p>
+        <p className="muted">
+          Corners for this camera were marked on another photo. Mark this photo to replace them.
+        </p>
       ) : null}
       <label className="field">
         <span>Court</span>

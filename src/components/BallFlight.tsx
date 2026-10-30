@@ -4,42 +4,30 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { COURT_PRESETS, type BallTrack, type CourtCalibration, type CourtPreset } from '../../shared/contracts.ts'
 import { flightBounces, peakHeight, positionAt, velocityAt, type Flight, type FlightFit, type Vec3 } from '../vision/flight'
 import { fitFlightsInWorker } from '../vision/flightFit'
+import { flightPaths, PREDICT_SECONDS, predictionText, describeSpot, type PathSample } from '../vision/flightText'
 import { predictFlight, type Prediction } from '../vision/physics'
 
-const PREDICT_SECONDS = 2
 const PAUSE_SECONDS = 0.6
 
-function describeSpot(preset: CourtPreset, p: Vec3) {
-  const { widthMeters, lengthMeters } = COURT_PRESETS[preset]
-  const outside = p.x < -0.5 || p.y < -0.5 || p.x > widthMeters + 0.5 || p.y > lengthMeters + 0.5
-  return `${p.x.toFixed(1)} m from the left line, ${p.y.toFixed(1)} m from the near line${outside ? ' (outside the court)' : ''}`
-}
-
-function predictionText(preset: CourtPreset, prediction: Prediction) {
-  const firstBounce = prediction.bounces[0]
-  if (prediction.obstacle && (!firstBounce || prediction.obstacle.t <= firstBounce.t)) {
-    return `Rapier: the ball hits the ${prediction.obstacle.name} at ${prediction.obstacle.t.toFixed(1)} s.`
-  }
-  if (!firstBounce) return `Rapier: no bounce in the next ${PREDICT_SECONDS} s.`
-  return `Rapier: next bounce at ${firstBounce.t.toFixed(1)} s, ${describeSpot(preset, firstBounce.p)}.`
-}
-
-function FlightView({
+export function FlightView({
   preset,
-  flights,
+  paths,
+  bounces,
   prediction,
-  cameraAt,
+  cameras,
 }: {
   preset: CourtPreset
-  flights: Flight[]
+  paths: PathSample[][]
+  bounces: Vec3[]
   prediction: Prediction | null
-  cameraAt: Vec3
+  cameras: Vec3[]
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const host = hostRef.current
-    if (!host || flights.length === 0) return
+    const drawn = paths.filter((path) => path.length > 1)
+    if (!host || drawn.length === 0) return
     const { widthMeters: width, lengthMeters: length } = COURT_PRESETS[preset]
     const place = (p: Vec3) => new THREE.Vector3(p.x - width / 2, p.z, length / 2 - p.y)
     const disposables: { dispose: () => void }[] = []
@@ -109,32 +97,33 @@ function FlightView({
       }
     }
 
-    const cameraMarker = new THREE.Mesh(
-      keep(new THREE.SphereGeometry(0.25, 16, 16)),
-      keep(new THREE.MeshBasicMaterial({ color: 0xf7fffe })),
-    )
-    cameraMarker.position.copy(place(cameraAt))
-    scene.add(cameraMarker)
-    scene.add(
-      new THREE.Line(
-        keep(new THREE.BufferGeometry().setFromPoints([place(cameraAt), place({ x: width / 2, y: length / 2, z: 0 })])),
-        keep(new THREE.LineDashedMaterial({ color: 0x8a8178, dashSize: 0.5, gapSize: 0.4 })),
-      ).computeLineDistances(),
-    )
+    const markerGeometry = keep(new THREE.SphereGeometry(0.25, 16, 16))
+    const markerMaterial = keep(new THREE.MeshBasicMaterial({ color: 0xf7fffe }))
+    const sightMaterial = keep(new THREE.LineDashedMaterial({ color: 0x8a8178, dashSize: 0.5, gapSize: 0.4 }))
+    for (const cameraAt of cameras) {
+      const marker = new THREE.Mesh(markerGeometry, markerMaterial)
+      marker.position.copy(place(cameraAt))
+      scene.add(marker)
+      scene.add(
+        new THREE.Line(
+          keep(new THREE.BufferGeometry().setFromPoints([place(cameraAt), place({ x: width / 2, y: length / 2, z: 0 })])),
+          sightMaterial,
+        ).computeLineDistances(),
+      )
+    }
 
     const pathMaterial = keep(new THREE.LineBasicMaterial({ color: 0xf3d38a }))
     const bounceGeometry = keep(new THREE.SphereGeometry(0.14, 16, 16))
     const seenBounce = keep(new THREE.MeshBasicMaterial({ color: 0xf3d38a }))
-    for (const flight of flights) {
-      const samples: THREE.Vector3[] = []
-      for (let t = flight.from; t < flight.to; t += 1 / 60) samples.push(place(positionAt(flight, t)))
-      samples.push(place(positionAt(flight, flight.to)))
-      scene.add(new THREE.Line(keep(new THREE.BufferGeometry().setFromPoints(samples)), pathMaterial))
-      if (flight.endBounce != null) {
-        const dot = new THREE.Mesh(bounceGeometry, seenBounce)
-        dot.position.copy(place(positionAt(flight, flight.endBounce)))
-        scene.add(dot)
-      }
+    for (const path of drawn) {
+      scene.add(
+        new THREE.Line(keep(new THREE.BufferGeometry().setFromPoints(path.map((sample) => place(sample.p)))), pathMaterial),
+      )
+    }
+    for (const bounce of bounces) {
+      const dot = new THREE.Mesh(bounceGeometry, seenBounce)
+      dot.position.copy(place(bounce))
+      scene.add(dot)
     }
     if (prediction) {
       scene.add(
@@ -156,12 +145,12 @@ function FlightView({
       keep(new THREE.MeshBasicMaterial({ color: 0xd8ec4a })),
     )
     scene.add(ball)
-    const start = flights[0]!.from
-    const seenEnd = flights[flights.length - 1]!.to
+    const start = drawn[0]![0]!.t
+    const seenEnd = drawn[drawn.length - 1]!.at(-1)!.t
     const end = prediction?.path[prediction.path.length - 1]?.t ?? seenEnd
     const ballAt = (t: number) => {
-      const flight = flights.find((item) => t >= item.from && t <= item.to)
-      if (flight) return positionAt(flight, t)
+      const path = drawn.find((item) => t >= item[0]!.t && t <= item.at(-1)!.t)
+      if (path) return path.find((sample) => sample.t >= t)?.p ?? null
       if (prediction && t > seenEnd) {
         const next = prediction.path.find((sample) => sample.t >= t)
         if (next) return next.p
@@ -204,7 +193,7 @@ function FlightView({
       renderer.dispose()
       renderer.domElement.remove()
     }
-  }, [preset, flights, prediction, cameraAt])
+  }, [preset, paths, bounces, prediction, cameras])
 
   return (
     <div
@@ -223,6 +212,9 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
   )
   const fit = fitted && fitted.track === track && fitted.court === court ? fitted.fit : undefined
   const flights = useMemo(() => fit?.flights.filter((flight) => flight.reliable) ?? [], [fit])
+  const paths = useMemo(() => flightPaths(flights), [flights])
+  const seenBounces = useMemo(() => flightBounces(flights).map((bounce) => bounce.p), [flights])
+  const cameras = useMemo(() => (fit ? [fit.camera.position] : []), [fit])
   const last = flights[flights.length - 1]
   const [predicted, setPredicted] = useState<{ from: Flight; prediction: Prediction } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -317,7 +309,13 @@ export function BallFlight({ track, court }: { track: BallTrack; court: CourtCal
       </ul>
       {flights.length > 0 ? (
         <>
-          <FlightView preset={court.preset} flights={flights} prediction={prediction} cameraAt={position} />
+          <FlightView
+            preset={court.preset}
+            paths={paths}
+            bounces={seenBounces}
+            prediction={prediction}
+            cameras={cameras}
+          />
           {prediction ? <p className="note">{predictionText(court.preset, prediction)}</p> : null}
           {!prediction && !error ? <p className="muted">Loading Rapier physics.</p> : null}
           <p className="muted">

@@ -6,6 +6,7 @@ import type {
   Device,
   MediaAssetRecord,
   SessionDetail,
+  Take,
 } from '../../shared/contracts.ts'
 
 const SESSION_KEY = 'pbmp-session-id'
@@ -94,6 +95,9 @@ export async function uploadAsset(
     width?: number
     height?: number
     snapshot?: AiSnapshot
+    deviceId?: string
+    takeId?: string
+    startedAt?: number
   },
 ) {
   const form = new FormData()
@@ -114,6 +118,9 @@ export async function uploadAsset(
       width: asset.width,
       height: asset.height,
       snapshot: asset.snapshot ?? null,
+      deviceId: asset.deviceId,
+      takeId: asset.takeId,
+      startedAt: asset.startedAt,
     }),
   )
   const response = await fetch(`/api/sessions/${sessionId}/assets`, { method: 'POST', body: form })
@@ -124,22 +131,31 @@ function courtKey(sessionId: string) {
   return `pbmp-court:${sessionId}`
 }
 
-export function readLocalCourt(sessionId: string): CourtCalibration | null {
+export function courtKeyOf(court: Pick<CourtCalibration, 'deviceId'>) {
+  return court.deviceId ?? ''
+}
+
+// Each phone marks the court in its own view; a court without a phone is the shared fallback.
+export function courtFor(courts: CourtCalibration[], deviceId: string | undefined) {
+  return courts.find((court) => courtKeyOf(court) === (deviceId ?? '')) ?? courts.find((court) => !court.deviceId) ?? null
+}
+
+export function readLocalCourts(sessionId: string): CourtCalibration[] {
   try {
     const raw = localStorage.getItem(courtKey(sessionId))
-    if (!raw) return null
-    const court = JSON.parse(raw) as CourtCalibration
-    if (!court || court.imagePoints?.length !== 4) return null
-    return court
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as CourtCalibration | CourtCalibration[]
+    const list = Array.isArray(parsed) ? parsed : [parsed]
+    return list.filter((court) => court && court.imagePoints?.length === 4)
   } catch {
-    return null
+    return []
   }
 }
 
-export function writeLocalCourt(sessionId: string, court: CourtCalibration | null) {
+export function writeLocalCourts(sessionId: string, courts: CourtCalibration[]) {
   try {
-    if (!court) localStorage.removeItem(courtKey(sessionId))
-    else localStorage.setItem(courtKey(sessionId), JSON.stringify(court))
+    if (courts.length === 0) localStorage.removeItem(courtKey(sessionId))
+    else localStorage.setItem(courtKey(sessionId), JSON.stringify(courts))
   } catch {
     // The calibration still applies for this visit.
   }
@@ -154,10 +170,27 @@ export async function saveRemoteCourt(sessionId: string, court: CourtCalibration
   if (!response.ok) throw new Error(await errorText(response))
 }
 
-export async function clearRemoteCourt(sessionId: string) {
-  const response = await fetch(`/api/sessions/${sessionId}/court`, { method: 'DELETE' })
+export async function clearRemoteCourt(sessionId: string, deviceId: string) {
+  const query = deviceId ? `?device=${encodeURIComponent(deviceId)}` : ''
+  const response = await fetch(`/api/sessions/${sessionId}/court${query}`, { method: 'DELETE' })
   if (response.status === 404) return
   if (!response.ok) throw new Error(await errorText(response))
+}
+
+export async function createTake(sessionId: string, seconds: number) {
+  const response = await fetch(`/api/sessions/${sessionId}/takes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seconds, deviceId: deviceId() }),
+  })
+  if (!response.ok) throw new Error(await errorText(response))
+  return (await response.json()) as Take
+}
+
+export async function fetchLatestTake(sessionId: string) {
+  const response = await fetch(`/api/sessions/${sessionId}/takes/latest`, { cache: 'no-store' })
+  if (!response.ok) throw new Error(await errorText(response))
+  return ((await response.json()) as { take: Take | null }).take
 }
 
 export type BallTracks = Record<string, BallTrack>

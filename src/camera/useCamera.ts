@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import { serverNow, syncClock } from '../session/clock'
 import { useSession } from '../session/context'
 import type { AiSnapshot, CameraInfo, CameraStatus, LiveCamera, NumericRange } from '../types'
 import { jpegFromVideo } from './webcodecs'
@@ -98,6 +99,8 @@ function preferredMime() {
   return MIME_CANDIDATES.find((type) => MediaRecorder.isTypeSupported(type))
 }
 
+export type TakeRecording = { id: string; stopAt: number }
+
 export function useCamera(
   previewRef: RefObject<HTMLVideoElement | null>,
   readSnapshot: () => AiSnapshot | null,
@@ -109,6 +112,9 @@ export function useCamera(
   const liveRef = useRef<LiveCamera | null>(null)
   const mountedRef = useRef(true)
   const openingRef = useRef(false)
+  const takeRef = useRef<TakeRecording | null>(null)
+  const startedAtRef = useRef<number | null>(null)
+  const stopTimerRef = useRef<number | null>(null)
 
   const [status, setStatus] = useState<CameraStatus>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -142,6 +148,8 @@ export function useCamera(
     const blob = new Blob(chunks, { type: mimeType })
     if (blob.size === 0) return
     const info = liveRef.current
+    const take = takeRef.current
+    takeRef.current = null
     addAsset({
       kind: 'video',
       blob,
@@ -150,9 +158,15 @@ export function useCamera(
       width: info?.width,
       height: info?.height,
       snapshot: readSnapshot(),
+      takeId: take?.id,
+      startedAt: startedAtRef.current ?? undefined,
     })
     if (mountedRef.current) {
-      setCaptureMessage('Video saved to this session. Play it below or on Results.')
+      setCaptureMessage(
+        take
+          ? 'Take saved. Every phone in the session recorded the same moment.'
+          : 'Video saved to this session. Play it below or on Results.',
+      )
     }
   }
 
@@ -174,6 +188,7 @@ export function useCamera(
     }
 
     openingRef.current = true
+    void syncClock().catch(() => undefined)
     setBusy(true)
     setError(null)
     setNotice(deviceId ? 'Switching camera…' : 'Requesting camera access…')
@@ -230,12 +245,12 @@ export function useCamera(
     await openCamera(deviceId)
   }
 
-  function startRecording() {
+  function startRecording(take?: TakeRecording) {
     const stream = streamRef.current
-    if (!stream || recording || busy) return
+    if (!stream || recorderRef.current || busy) return false
     if (typeof MediaRecorder === 'undefined') {
       setCaptureMessage('This browser cannot record video.')
-      return
+      return false
     }
 
     const mimeType = preferredMime()
@@ -244,14 +259,28 @@ export function useCamera(
       recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
     } catch {
       setCaptureMessage('This browser could not start a recording.')
-      return
+      return false
     }
 
     chunksRef.current = []
+    takeRef.current = take ?? null
+    startedAtRef.current = null
+    recorder.onstart = () => {
+      startedAtRef.current = serverNow()
+      if (!take) return
+      stopTimerRef.current = window.setTimeout(
+        () => {
+          if (recorder.state === 'recording') recorder.stop()
+        },
+        Math.max(0, take.stopAt - serverNow()),
+      )
+    }
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunksRef.current.push(event.data)
     }
     recorder.onstop = () => {
+      if (stopTimerRef.current != null) window.clearTimeout(stopTimerRef.current)
+      stopTimerRef.current = null
       finalizeRecording(recorder)
       recorderRef.current = null
       if (mountedRef.current) setRecording(false)
@@ -261,6 +290,7 @@ export function useCamera(
     setElapsedMs(0)
     setRecording(true)
     setCaptureMessage(null)
+    return true
   }
 
   function toggleRecording() {
@@ -289,6 +319,7 @@ export function useCamera(
         width: still.width,
         height: still.height,
         snapshot: readSnapshot(),
+        startedAt: serverNow(),
       })
       setCaptureMessage(
         still.path === 'webcodecs'
@@ -368,5 +399,6 @@ export function useCamera(
     selectCamera,
     capturePhoto: () => void capturePhoto(),
     toggleRecording,
+    recordTake: (take: TakeRecording) => startRecording(take),
   }
 }

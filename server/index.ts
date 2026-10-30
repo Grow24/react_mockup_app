@@ -9,6 +9,8 @@ import {
   listModels,
   openStore,
   readAssetFile,
+  createTake,
+  latestTake,
   saveBallTrack,
   saveCourt,
   saveAsset,
@@ -17,6 +19,8 @@ import {
 } from './store.ts'
 import {
   BALL_TRACK_LIMIT,
+  TAKE_LEAD_MS,
+  TAKE_SECONDS,
   type AiSnapshot,
   type BallPoint,
   type BallTrack,
@@ -168,13 +172,18 @@ function asCourt(value: unknown): CourtCalibration | undefined {
     }
     imagePoints.push({ x: point.x, y: point.y })
   }
-  return {
+  const next: CourtCalibration = {
     preset: court.preset as CourtPreset,
     assetId: court.assetId,
     sourceWidth: court.sourceWidth,
     sourceHeight: court.sourceHeight,
     imagePoints,
   }
+  if (court.deviceId != null) {
+    if (typeof court.deviceId !== 'string' || !isUuid(court.deviceId)) return undefined
+    next.deviceId = court.deviceId
+  }
+  return next
 }
 
 function finiteIn(value: unknown, min: number, max: number): value is number {
@@ -293,6 +302,11 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/time') {
+    sendJson(res, 200, { now: Date.now() })
+    return
+  }
+
   if (!url.pathname.startsWith('/api')) {
     if (await serveApp(req, res, url.pathname)) return
     sendJson(res, 404, { error: 'Not found.' })
@@ -370,6 +384,39 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return
   }
 
+  if (parts[0] === 'api' && parts[1] === 'sessions' && parts[3] === 'takes' && isUuid(parts[2] ?? '')) {
+    if (parts.length === 4 && req.method === 'POST') {
+      const body = (await readBody(req)) as { seconds?: unknown; deviceId?: unknown } | undefined
+      if (!body) {
+        sendJson(res, 413, { error: 'Take request is too large.' })
+        return
+      }
+      const seconds = TAKE_SECONDS.find((choice) => choice === body.seconds)
+      if (!seconds) {
+        sendJson(res, 400, { error: `A take lasts ${TAKE_SECONDS.join(', ')} seconds.` })
+        return
+      }
+      const createdBy = typeof body.deviceId === 'string' && isUuid(body.deviceId) ? body.deviceId : ''
+      const now = Date.now()
+      const take = createTake(parts[2]!, { id: randomUUID(), startAt: now + TAKE_LEAD_MS, seconds, createdAt: now, createdBy })
+      if (!take) {
+        sendJson(res, 404, { error: 'Session was not found.' })
+        return
+      }
+      sendJson(res, 200, take)
+      return
+    }
+    if (parts.length === 5 && parts[4] === 'latest' && req.method === 'GET') {
+      const take = latestTake(parts[2]!)
+      if (take === undefined) {
+        sendJson(res, 404, { error: 'Session was not found.' })
+        return
+      }
+      sendJson(res, 200, { take })
+      return
+    }
+  }
+
   if (
     parts[0] === 'api' &&
     parts[1] === 'sessions' &&
@@ -382,7 +429,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       return
     }
     if (req.method === 'DELETE') {
-      const session = saveCourt(parts[2]!, null)
+      const device = url.searchParams.get('device') ?? ''
+      if (device && !isUuid(device)) {
+        sendJson(res, 400, { error: 'Device id is not valid.' })
+        return
+      }
+      const session = saveCourt(parts[2]!, device, null)
       if (!session) {
         sendJson(res, 404, { error: 'Session was not found.' })
         return
@@ -400,7 +452,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       sendJson(res, 400, { error: 'Court calibration is not valid.' })
       return
     }
-    const session = saveCourt(parts[2]!, court)
+    const session = saveCourt(parts[2]!, court.deviceId ?? '', court)
     if (!session) {
       sendJson(res, 404, { error: 'Session was not found.' })
       return
@@ -440,6 +492,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       width?: unknown
       height?: unknown
       snapshot?: unknown
+      deviceId?: unknown
+      takeId?: unknown
+      startedAt?: unknown
     }
     try {
       meta = JSON.parse(metaText) as typeof meta
@@ -468,6 +523,17 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       sendJson(res, 400, { error: 'AI snapshot is not valid.' })
       return
     }
+    for (const key of ['deviceId', 'takeId'] as const) {
+      const value = meta[key]
+      if (value != null && (typeof value !== 'string' || !isUuid(value))) {
+        sendJson(res, 400, { error: `${key} is not valid.` })
+        return
+      }
+    }
+    if (meta.startedAt != null && !finiteIn(meta.startedAt, 0, Number.MAX_SAFE_INTEGER)) {
+      sendJson(res, 400, { error: 'startedAt is not valid.' })
+      return
+    }
     const saved = await saveAsset(
       parts[2]!,
       {
@@ -479,6 +545,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
         width: typeof meta.width === 'number' ? meta.width : undefined,
         height: typeof meta.height === 'number' ? meta.height : undefined,
         snapshot,
+        deviceId: typeof meta.deviceId === 'string' ? meta.deviceId : undefined,
+        takeId: typeof meta.takeId === 'string' ? meta.takeId : undefined,
+        startedAt: typeof meta.startedAt === 'number' ? meta.startedAt : undefined,
       },
       Buffer.from(await file.arrayBuffer()),
     )

@@ -10,12 +10,12 @@ export type SessionValue = {
   storageWarning: string | null
   sessionId: string | null
   backend: BackendStatus
-  court: CourtCalibration | null
+  courts: CourtCalibration[]
   ballTracks: Record<string, BallTrack>
   addAsset: (input: NewMediaAsset) => string
   removeAsset: (id: string) => void
   noteCameras: (cameras: CameraRecord[]) => void
-  setCourt: (court: CourtCalibration | null) => void
+  setCourt: (deviceKey: string, court: CourtCalibration | null) => void
   setBallTrack: (assetId: string, track: BallTrack | null) => void
 }
 

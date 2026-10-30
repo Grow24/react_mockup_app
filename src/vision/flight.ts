@@ -135,6 +135,19 @@ export function cameraFromCourt(court: CourtCalibration): CourtCamera | null {
   return { focal, cx, cy, rows, translation, position, focalEstimated }
 }
 
+// The rows of K [R | t]: u = (m1·P + w1) / (m3·P + w3) and v = (m2·P + w2) / (m3·P + w3).
+export function projectionRows(camera: CourtCamera) {
+  const { focal, cx, cy, rows, translation } = camera
+  return {
+    m1: { x: focal * rows[0].x + cx * rows[2].x, y: focal * rows[0].y + cx * rows[2].y, z: focal * rows[0].z + cx * rows[2].z },
+    m2: { x: focal * rows[1].x + cy * rows[2].x, y: focal * rows[1].y + cy * rows[2].y, z: focal * rows[1].z + cy * rows[2].z },
+    m3: rows[2],
+    w1: focal * translation.x + cx * translation.z,
+    w2: focal * translation.y + cy * translation.z,
+    w3: translation.z,
+  }
+}
+
 export function projectPoint(camera: CourtCamera, point: Vec3) {
   const x = dot(camera.rows[0], point) + camera.translation.x
   const y = dot(camera.rows[1], point) + camera.translation.y
@@ -207,13 +220,7 @@ export function solveChain(
   model: BounceModel,
   passes = 4,
 ): Chain | null {
-  const { focal, cx, cy, rows, translation } = camera
-  const m1 = { x: focal * rows[0].x + cx * rows[2].x, y: focal * rows[0].y + cx * rows[2].y, z: focal * rows[0].z + cx * rows[2].z }
-  const m2 = { x: focal * rows[1].x + cy * rows[2].x, y: focal * rows[1].y + cy * rows[2].y, z: focal * rows[1].z + cy * rows[2].z }
-  const m3 = rows[2]
-  const w1 = focal * translation.x + cx * translation.z
-  const w2 = focal * translation.y + cy * translation.z
-  const w3 = translation.z
+  const { m1, m2, m3, w1, w2, w3 } = projectionRows(camera)
   const size = groups.length * 6
   const refs = groups.map((group) => group[0]!.t)
   let depths = groups.map((group) => group.map(() => 1))

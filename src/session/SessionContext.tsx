@@ -8,8 +8,10 @@ import {
   deleteRemoteAsset,
   fetchSession,
   openSession,
+  courtKeyOf,
+  deviceId as ownDeviceId,
   readLocalBallTracks,
-  readLocalCourt,
+  readLocalCourts,
   rememberedSessionId,
   rememberSessionId,
   saveCameras,
@@ -20,14 +22,25 @@ import {
   tracksById,
   uploadAsset,
   writeLocalBallTracks,
-  writeLocalCourt,
+  writeLocalCourts,
   type BallTracks,
 } from './api'
 import { deleteStored, loadStored, saveStored, type StoredAsset } from './db'
 import { SessionContext, type BackendStatus } from './context'
 
+type CaptureFields = Pick<MediaAsset, 'deviceId' | 'takeId' | 'startedAt'>
+
+function captureFields(source: CaptureFields): CaptureFields {
+  const fields: CaptureFields = {}
+  if (source.deviceId) fields.deviceId = source.deviceId
+  if (source.takeId) fields.takeId = source.takeId
+  if (source.startedAt != null) fields.startedAt = source.startedAt
+  return fields
+}
+
 function fromLocal(record: StoredAsset, url: string): MediaAsset {
   return {
+    ...captureFields(record),
     id: record.id,
     kind: record.kind,
     url,
@@ -42,6 +55,7 @@ function fromLocal(record: StoredAsset, url: string): MediaAsset {
 
 function fromServer(record: MediaAssetRecord): MediaAsset {
   return {
+    ...captureFields(record),
     id: record.id,
     kind: record.kind,
     url: assetUrl(record),
@@ -54,6 +68,11 @@ function fromServer(record: MediaAssetRecord): MediaAsset {
   }
 }
 
+function serverCourts(session: SessionDetail) {
+  if (Array.isArray(session.courts)) return session.courts
+  return session.court ? [session.court] : []
+}
+
 function requestedSessionId() {
   return new URLSearchParams(window.location.search).get('session')
 }
@@ -63,7 +82,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false)
   const [storageWarning, setStorageWarning] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
-  const [court, setCourtState] = useState<CourtCalibration | null>(null)
+  const [courts, setCourtsState] = useState<CourtCalibration[]>([])
+  const courtsRef = useRef<CourtCalibration[]>([])
   const [ballTracks, setBallTracksState] = useState<BallTracks>({})
   const [backend, setBackend] = useState<BackendStatus>('offline')
   const assetsRef = useRef(assets)
@@ -80,6 +100,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       createdAt: asset.createdAt,
       cameraLabel: asset.cameraLabel,
       blob,
+      ...captureFields(asset),
     }
     if (asset.width) record.width = asset.width
     if (asset.height) record.height = asset.height
@@ -100,6 +121,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       width: asset.width,
       height: asset.height,
       snapshot: asset.snapshot,
+      ...captureFields(asset),
     })
   }, [])
 
@@ -115,6 +137,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         width: input.width,
         height: input.height,
         snapshot: input.snapshot ?? undefined,
+        ...captureFields({ ...input, deviceId: input.deviceId ?? ownDeviceId() }),
       }
       setAssets((current) => [asset, ...current])
       void rememberAsset(asset, input.blob)
@@ -176,18 +199,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [publishBallTracks])
 
-  const setCourt = useCallback((next: CourtCalibration | null) => {
-    setCourtState(next)
+  const publishCourts = useCallback((next: CourtCalibration[]) => {
+    courtsRef.current = next
+    setCourtsState(next)
     const id = sessionRef.current
-    if (!id) return
-    writeLocalCourt(id, next)
-    if (backendRef.current !== 'online') return
-    const request = next ? saveRemoteCourt(id, next) : clearRemoteCourt(id)
+    if (id) writeLocalCourts(id, next)
+  }, [])
+
+  const setCourt = useCallback((deviceKey: string, next: CourtCalibration | null) => {
+    const others = courtsRef.current.filter((court) => courtKeyOf(court) !== deviceKey)
+    publishCourts(next ? [next, ...others] : others)
+    const id = sessionRef.current
+    if (!id || backendRef.current !== 'online') return
+    const request = next ? saveRemoteCourt(id, next) : clearRemoteCourt(id, deviceKey)
     void request.catch((error) => {
       console.error(error)
       setStorageWarning('The court stays in this browser. The server did not keep it.')
     })
-  }, [])
+  }, [publishCourts])
 
   const noteCameras = useCallback((cameras: CameraRecord[]) => {
     const id = sessionRef.current
@@ -227,6 +256,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           width: record.width,
           height: record.height,
           snapshot: record.snapshot,
+          ...captureFields(record),
         })
       }
     }
@@ -274,16 +304,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           const tracks = await syncBallTracks(latest)
           if (!active) return
           setAssets(latest.assets.map((asset) => fromServer(asset)))
-          setCourtState(latest.court ?? null)
-          writeLocalCourt(session.id, latest.court ?? null)
+          publishCourts(serverCourts(latest))
           publishBallTracks(tracks)
           setStorageWarning(null)
         } catch (error) {
           if (!active) return
           console.error(error)
           setAssets(latest.assets.map((asset) => fromServer(asset)))
-          setCourtState(latest.court ?? null)
-          writeLocalCourt(session.id, latest.court ?? null)
+          publishCourts(serverCourts(latest))
           publishBallTracks({ ...readLocalBallTracks(session.id), ...tracksById(latest.ballTracks) })
           setStorageWarning('Some files saved in this browser have not reached the server yet.')
         }
@@ -297,7 +325,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
         setBackend('offline')
         backendRef.current = 'offline'
-        setCourtState(readLocalCourt(id))
+        publishCourts(readLocalCourts(id))
         publishBallTracks(readLocalBallTracks(id))
         try {
           setAssets(await localAssets())
@@ -315,7 +343,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false
     }
-  }, [publishBallTracks])
+  }, [publishBallTracks, publishCourts])
 
   useEffect(() => {
     return () => {
@@ -331,7 +359,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ready,
       storageWarning,
       sessionId,
-      court,
+      courts,
       ballTracks,
       backend,
       addAsset,
@@ -345,7 +373,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ready,
       storageWarning,
       sessionId,
-      court,
+      courts,
       ballTracks,
       backend,
       addAsset,

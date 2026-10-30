@@ -103,7 +103,22 @@ export type MediaAssetRecord = {
   fileUrl: string
   inference: InferenceResult | null
   spatial: SpatialResult | null
+  deviceId?: string
+  takeId?: string
+  startedAt?: number
 }
+
+export type Take = {
+  id: string
+  sessionId: string
+  startAt: number
+  seconds: number
+  createdAt: number
+  createdBy: string
+}
+
+export const TAKE_LEAD_MS = 2500
+export const TAKE_SECONDS = [5, 10, 20] as const
 
 export type CourtPreset = 'tennis-doubles' | 'cricket-pitch'
 
@@ -115,6 +130,7 @@ export type CourtPoint = {
 export type CourtCalibration = {
   preset: CourtPreset
   assetId: string
+  deviceId?: string
   sourceWidth: number
   sourceHeight: number
   imagePoints: CourtPoint[]
@@ -152,5 +168,6 @@ export const BALL_TRACK_LIMIT = 5000
 export type SessionDetail = CaptureSession & {
   assets: MediaAssetRecord[]
   court: CourtCalibration | null
+  courts: CourtCalibration[]
   ballTracks: BallTrack[]
 }

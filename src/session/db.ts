@@ -13,6 +13,9 @@ export type StoredAsset = {
   height?: number
   snapshot?: AiSnapshot
   blob: Blob
+  deviceId?: string
+  takeId?: string
+  startedAt?: number
 }
 
 let opening: Promise<IDBDatabase> | null = null

@@ -28,6 +28,9 @@ export type MediaAsset = {
   width?: number
   height?: number
   snapshot?: AiSnapshot
+  deviceId?: string
+  takeId?: string
+  startedAt?: number
 }
 
 export type NewMediaAsset = {
@@ -38,6 +41,9 @@ export type NewMediaAsset = {
   width?: number
   height?: number
   snapshot?: AiSnapshot | null
+  deviceId?: string
+  takeId?: string
+  startedAt?: number
 }
 
 export type CameraInfo = {
