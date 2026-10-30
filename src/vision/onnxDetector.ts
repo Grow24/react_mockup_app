@@ -1,10 +1,11 @@
 import type { Detection } from '../types'
+import { COCO_MODEL, specOf, type DetectorModel } from './models'
 import type { DecodeOptions } from './yolo'
 
 export type OnnxBackend = { name: 'webgpu' | 'wasm'; threads: number }
 
-type Ready = { type: 'ready'; backend: OnnxBackend }
-type Failed = { type: 'error'; message: string }
+type Ready = { type: 'ready'; key: string; backend: OnnxBackend }
+type Failed = { type: 'error'; key: string; message: string }
 type Result = {
   type: 'result'
   id: number
@@ -14,13 +15,18 @@ type Result = {
 }
 
 let worker: Worker | null = null
-let loading: Promise<void> | null = null
-let readyResolve: (() => void) | null = null
-let readyReject: ((error: Error) => void) | null = null
 let nextId = 0
 let busy = false
 let backend: OnnxBackend | null = null
+const loading = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void }>()
 const waiters = new Map<number, { resolve: (value: { detections: Detection[]; inferenceMs: number }) => void; reject: (error: Error) => void }>()
+
+function failAll(error: Error) {
+  for (const entry of loading.values()) entry.reject(error)
+  loading.clear()
+  for (const waiter of waiters.values()) waiter.reject(error)
+  waiters.clear()
+}
 
 function ensureWorker() {
   if (worker) return worker
@@ -29,12 +35,12 @@ function ensureWorker() {
     const message = event.data
     if (message.type === 'ready') {
       backend = message.backend
-      readyResolve?.()
+      loading.get(message.key)?.resolve()
       return
     }
     if (message.type === 'error') {
-      readyReject?.(new Error(message.message))
-      loading = null
+      loading.get(message.key)?.reject(new Error(message.message))
+      loading.delete(message.key)
       return
     }
     const waiter = waiters.get(message.id)
@@ -44,21 +50,24 @@ function ensureWorker() {
     else waiter.resolve({ detections: message.detections, inferenceMs: message.inferenceMs })
   }
   worker.onerror = () => {
-    readyReject?.(new Error('The ONNX worker stopped.'))
-    loading = null
+    failAll(new Error('The ONNX worker stopped.'))
   }
   return worker
 }
 
-export function prepareOnnx() {
-  if (!loading) {
-    loading = new Promise<void>((resolve, reject) => {
-      readyResolve = resolve
-      readyReject = reject
-      ensureWorker().postMessage({ type: 'load' })
-    })
-  }
-  return loading
+export function prepareOnnx(model: DetectorModel = COCO_MODEL) {
+  const existing = loading.get(model.id)
+  if (existing) return existing.promise
+  let resolve: () => void = () => undefined
+  let reject: (error: Error) => void = () => undefined
+  const promise = new Promise<void>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  promise.catch(() => undefined)
+  loading.set(model.id, { promise, resolve, reject })
+  ensureWorker().postMessage({ type: 'load', spec: specOf(model) })
+  return promise
 }
 
 export function onnxBackend() {
@@ -68,29 +77,28 @@ export function onnxBackend() {
 export function resetOnnx() {
   worker?.terminate()
   worker = null
-  loading = null
-  readyResolve = null
-  readyReject = null
   busy = false
-  for (const waiter of waiters.values()) waiter.reject(new Error('ONNX was reset.'))
-  waiters.clear()
+  failAll(new Error('ONNX was reset.'))
 }
 
 export async function detectSource(
   source: CanvasImageSource,
   width: number,
   height: number,
-  options?: DecodeOptions,
+  options: DecodeOptions & { model?: DetectorModel } = {},
 ) {
   if (busy || width < 2 || height < 2) return null
   busy = true
+  const { model = COCO_MODEL, ...decode } = options
   try {
-    await prepareOnnx()
+    await prepareOnnx(model)
     const bitmap = await createImageBitmap(source)
     const id = ++nextId
     return await new Promise<{ detections: Detection[]; inferenceMs: number }>((resolve, reject) => {
       waiters.set(id, { resolve, reject })
-      ensureWorker().postMessage({ type: 'detect', id, bitmap, width, height, options }, [bitmap])
+      ensureWorker().postMessage({ type: 'detect', id, spec: specOf(model), bitmap, width, height, options: decode }, [
+        bitmap,
+      ])
     })
   } finally {
     busy = false

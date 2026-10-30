@@ -3,6 +3,7 @@ import type {
   BallTrack,
   CameraRecord,
   CourtCalibration,
+  CustomModel,
   Device,
   MediaAssetRecord,
   SessionDetail,
@@ -191,6 +192,40 @@ export async function fetchLatestTake(sessionId: string) {
   const response = await fetch(`/api/sessions/${sessionId}/takes/latest`, { cache: 'no-store' })
   if (!response.ok) throw new Error(await errorText(response))
   return ((await response.json()) as { take: Take | null }).take
+}
+
+export type ModelDetails = Pick<CustomModel, 'name' | 'inputSize' | 'labels' | 'ballClasses'>
+
+export async function uploadModel(sessionId: string, id: string, details: ModelDetails, bytes: ArrayBuffer) {
+  const form = new FormData()
+  form.set('file', new Blob([bytes], { type: 'application/octet-stream' }), 'model.onnx')
+  form.set('meta', JSON.stringify({ id, ...details }))
+  const response = await fetch(`/api/sessions/${sessionId}/models`, { method: 'POST', body: form })
+  if (!response.ok) throw new Error(await errorText(response))
+  return (await response.json()) as SessionDetail
+}
+
+export async function saveModelDetails(id: string, details: ModelDetails) {
+  const response = await fetch(`/api/custom-models/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(details),
+  })
+  if (!response.ok) throw new Error(await errorText(response))
+  return (await response.json()) as SessionDetail
+}
+
+export async function deleteRemoteModel(id: string) {
+  const response = await fetch(`/api/custom-models/${id}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error(await errorText(response))
+  return (await response.json()) as SessionDetail
+}
+
+// The server downloads the link, so model hosts without CORS headers still work.
+export async function fetchModelBytes(link: string) {
+  const response = await fetch(`/api/fetch-model?url=${encodeURIComponent(link)}`)
+  if (!response.ok) throw new Error(await errorText(response))
+  return response.arrayBuffer()
 }
 
 export type BallTracks = Record<string, BallTrack>

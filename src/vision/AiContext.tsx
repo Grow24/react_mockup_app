@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AiSnapshot } from '../types'
+import { useSession } from '../session/context'
 import { AiContext, type AiStatus } from './context'
 import { loadEngines, resetEngines, type DelegateName, type Engines } from './engine'
+import { findModel } from './models'
 import { prepareOnnx, resetOnnx } from './onnxDetector'
-import { OBJECT_MODEL_ID, ONNX_MODEL_ID, type ObjectDetectorId } from './yolo'
+import { OBJECT_MODEL_ID, type ObjectDetectorId } from './yolo'
 
 const ENABLED_KEY = 'pbmp-ai-enabled'
 const CONFIDENCE_KEY = 'pbmp-ai-confidence'
@@ -31,7 +33,7 @@ function readConfidence() {
 
 function readDetector(): ObjectDetectorId {
   try {
-    return localStorage.getItem(DETECTOR_KEY) === ONNX_MODEL_ID ? ONNX_MODEL_ID : OBJECT_MODEL_ID
+    return localStorage.getItem(DETECTOR_KEY) || OBJECT_MODEL_ID
   } catch {
     return OBJECT_MODEL_ID
   }
@@ -54,14 +56,18 @@ function loadError(error: unknown) {
 }
 
 export function AiProvider({ children }: { children: ReactNode }) {
+  const { models } = useSession()
   const [enabled, setEnabledState] = useState(readEnabled)
   const [confidence, setConfidenceState] = useState(readConfidence)
-  const [objectDetector, setObjectDetectorState] = useState<ObjectDetectorId>(readDetector)
+  const [chosenDetector, setObjectDetectorState] = useState<ObjectDetectorId>(readDetector)
+  // A custom model that was removed from the session falls back to MediaPipe.
+  const objectModel = chosenDetector === OBJECT_MODEL_ID ? null : findModel(models, chosenDetector)
+  const objectDetector = objectModel ? chosenDetector : OBJECT_MODEL_ID
   const [error, setError] = useState<string | null>(null)
   const [delegate, setDelegate] = useState<DelegateName | null>(null)
   const [latest, setLatest] = useState<AiSnapshot | null>(null)
   const [engines, setEngines] = useState<Engines | null>(null)
-  const [onnxReady, setOnnxReady] = useState(false)
+  const [onnxReadyId, setOnnxReadyId] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const latestRef = useRef<AiSnapshot | null>(null)
   const enabledRef = useRef(enabled)
@@ -103,7 +109,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     resetEngines()
     resetOnnx()
     setEngines(null)
-    setOnnxReady(false)
+    setOnnxReadyId(null)
     setAttempt((current) => current + 1)
     setEnabled(true)
   }, [setEnabled])
@@ -130,29 +136,35 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
   }, [enabled, attempt])
 
+  const modelId = objectModel?.id ?? null
+  const modelRef = useRef(objectModel)
   useEffect(() => {
-    if (!enabled || objectDetector !== ONNX_MODEL_ID) return
+    modelRef.current = objectModel
+  })
+
+  useEffect(() => {
+    const model = modelRef.current
+    if (!enabled || !model) return
     let cancelled = false
-    prepareOnnx()
+    prepareOnnx(model)
       .then(() => {
-        if (!cancelled) setOnnxReady(true)
+        if (!cancelled) setOnnxReadyId(model.id)
       })
       .catch((caught) => {
         if (cancelled) return
         console.error(caught)
-        setOnnxReady(false)
         setError(loadError(caught))
       })
     return () => {
       cancelled = true
     }
-  }, [enabled, objectDetector, attempt])
+  }, [enabled, modelId, attempt])
 
   const status: AiStatus = !enabled
     ? 'off'
     : error
       ? 'error'
-      : !engines || (objectDetector === ONNX_MODEL_ID && !onnxReady)
+      : !engines || (objectModel && onnxReadyId !== objectModel.id)
         ? 'loading'
         : 'ready'
 
@@ -161,6 +173,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       enabled,
       confidence,
       objectDetector,
+      objectModel,
       status,
       error,
       delegate,
@@ -177,6 +190,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       enabled,
       confidence,
       objectDetector,
+      objectModel,
       status,
       error,
       delegate,

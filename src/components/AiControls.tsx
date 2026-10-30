@@ -1,6 +1,8 @@
 import { formatPercent, formatPerformance } from '../format'
+import { useSession } from '../session/context'
 import { useAi } from '../vision/context'
-import { OBJECT_MODEL_ID, ONNX_MODEL_ID, type ObjectDetectorId } from '../vision/yolo'
+import { modelChoices } from '../vision/models'
+import { OBJECT_MODEL_ID } from '../vision/yolo'
 
 function statusLabel(status: string) {
   if (status === 'loading') return 'Loading'
@@ -11,6 +13,8 @@ function statusLabel(status: string) {
 
 export function AiControls() {
   const ai = useAi()
+  const { models } = useSession()
+  const model = ai.objectModel
   const poseReady =
     (ai.latest?.pose.filter((point) => point.visibility >= 0.5).length ?? 0) >= 4
 
@@ -47,14 +51,14 @@ export function AiControls() {
       ) : null}
       {ai.status === 'loading' ? (
         <p className="muted">
-          {ai.objectDetector === ONNX_MODEL_ID
-            ? 'Downloading YOLOv8n. The first time is about 12 MB. Capture still works.'
+          {model
+            ? `Downloading ${model.builtIn ? 'YOLOv8n. The first time is about 12 MB' : model.name}. Capture still works.`
             : 'Starting the models. The first time downloads them and can take a moment.'}
         </p>
       ) : null}
-      {ai.status === 'ready' && ai.objectDetector === ONNX_MODEL_ID ? (
+      {ai.status === 'ready' && model ? (
         <p className="muted">
-          YOLOv8n is running in a worker. Pose still uses MediaPipe
+          {model.builtIn ? 'YOLOv8n' : model.name} is running in a worker. Pose still uses MediaPipe
           {ai.delegate ? ` on ${ai.delegate}` : ''}.
         </p>
       ) : null}
@@ -66,15 +70,19 @@ export function AiControls() {
         <span>Object model</span>
         <select
           value={ai.objectDetector}
-          onChange={(event) => ai.setObjectDetector(event.target.value as ObjectDetectorId)}
+          onChange={(event) => ai.setObjectDetector(event.target.value)}
         >
           <option value={OBJECT_MODEL_ID}>MediaPipe EfficientDet</option>
-          <option value={ONNX_MODEL_ID}>ONNX YOLOv8n, Roboflow layout</option>
+          {modelChoices(models).map((choice) => (
+            <option key={choice.id} value={choice.id}>
+              {choice.builtIn ? 'ONNX YOLOv8n, COCO classes' : `${choice.name} (custom)`}
+            </option>
+          ))}
         </select>
       </label>
       <p className="muted">
-        Both models draw the same boxes. A Roboflow YOLOv8 ONNX export can replace this file later.
-        The skeleton does not change.
+        Every model draws the same kind of boxes, with its own class names. Add your own model below. The
+        skeleton does not change.
       </p>
 
       <label className="field">

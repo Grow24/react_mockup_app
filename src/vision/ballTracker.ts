@@ -1,5 +1,6 @@
-import { BALL_TRACK_LIMIT, ONNX_MODEL_ID, SPORTS_BALL_CLASS, type BallTrack } from '../../shared/contracts.ts'
+import { BALL_TRACK_LIMIT, type BallTrack } from '../../shared/contracts.ts'
 import { candidatesFrom, linkBallTrack, type BallFrame } from './ball.ts'
+import { COCO_MODEL, type DetectorModel } from './models'
 import { detectSource, prepareOnnx } from './onnxDetector'
 
 export const BALL_SAMPLE_FPS = 10
@@ -54,11 +55,12 @@ function stopped() {
   return new DOMException('Ball tracking was stopped.', 'AbortError')
 }
 
-async function detectBall(video: HTMLVideoElement, signal: AbortSignal) {
+async function detectBall(video: HTMLVideoElement, signal: AbortSignal, model: DetectorModel) {
   for (;;) {
     if (signal.aborted) throw stopped()
     const result = await detectSource(video, video.videoWidth, video.videoHeight, {
-      classes: [SPORTS_BALL_CLASS],
+      model,
+      classes: model.ballClasses,
       minScore: BALL_MIN_SCORE,
     })
     if (result) return result.detections
@@ -71,8 +73,10 @@ export async function trackBall(
   assetId: string,
   signal: AbortSignal,
   onProgress: (done: number, total: number, found: number) => void,
+  model: DetectorModel = COCO_MODEL,
 ): Promise<BallTrack> {
-  await prepareOnnx()
+  if (model.ballClasses.length === 0) throw new Error(`Pick which classes are the ball for ${model.name} on the AI screen.`)
+  await prepareOnnx(model)
   const video = await openVideo(url)
   try {
     const width = video.videoWidth
@@ -89,14 +93,14 @@ export async function trackBall(
       if (signal.aborted) throw stopped()
       const t = Math.min(end, index / BALL_SAMPLE_FPS)
       await seek(video, t)
-      const candidates = candidatesFrom(await detectBall(video, signal))
+      const candidates = candidatesFrom(await detectBall(video, signal, model))
       if (candidates.length > 0) found += 1
       frames.push({ t, candidates })
       onProgress(index + 1, total, found)
     }
     return {
       assetId,
-      modelId: ONNX_MODEL_ID,
+      modelId: model.id,
       sourceWidth: width,
       sourceHeight: height,
       sampleFps: BALL_SAMPLE_FPS,

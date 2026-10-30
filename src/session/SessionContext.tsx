@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { BallTrack, CameraRecord, CourtCalibration, MediaAssetRecord, SessionDetail } from '../../shared/contracts.ts'
+import type {
+  BallTrack,
+  CameraRecord,
+  CourtCalibration,
+  CustomModel,
+  MediaAssetRecord,
+  SessionDetail,
+} from '../../shared/contracts.ts'
 import type { MediaAsset, NewMediaAsset } from '../types'
 import {
   assetUrl,
   clearRemoteBallTrack,
   clearRemoteCourt,
   deleteRemoteAsset,
+  deleteRemoteModel,
   fetchSession,
   openSession,
   courtKeyOf,
@@ -15,12 +23,15 @@ import {
   rememberedSessionId,
   rememberSessionId,
   saveCameras,
+  saveModelDetails,
   saveRemoteBallTrack,
   saveRemoteCourt,
   snapshotOf,
   thisDevice,
   tracksById,
   uploadAsset,
+  uploadModel,
+  type ModelDetails,
   writeLocalBallTracks,
   writeLocalCourts,
   type BallTracks,
@@ -85,6 +96,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [courts, setCourtsState] = useState<CourtCalibration[]>([])
   const courtsRef = useRef<CourtCalibration[]>([])
   const [ballTracks, setBallTracksState] = useState<BallTracks>({})
+  const [models, setModels] = useState<CustomModel[]>([])
   const [backend, setBackend] = useState<BackendStatus>('offline')
   const assetsRef = useRef(assets)
   const ballTracksRef = useRef<BallTracks>({})
@@ -225,6 +237,38 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     })
   }, [publishCourts])
 
+  const needServer = useCallback(() => {
+    const id = sessionRef.current
+    if (!id || backendRef.current !== 'online') throw new Error('Custom models need the server.')
+    return id
+  }, [])
+
+  const addModel = useCallback(
+    async (details: ModelDetails, bytes: ArrayBuffer) => {
+      const id = crypto.randomUUID()
+      const session = await uploadModel(needServer(), id, details, bytes)
+      setModels(session.models ?? [])
+      return id
+    },
+    [needServer],
+  )
+
+  const editModel = useCallback(
+    async (id: string, details: ModelDetails) => {
+      needServer()
+      setModels((await saveModelDetails(id, details)).models ?? [])
+    },
+    [needServer],
+  )
+
+  const removeModel = useCallback(
+    async (id: string) => {
+      needServer()
+      setModels((await deleteRemoteModel(id)).models ?? [])
+    },
+    [needServer],
+  )
+
   const noteCameras = useCallback((cameras: CameraRecord[]) => {
     const id = sessionRef.current
     if (!id || backendRef.current !== 'online') return
@@ -313,12 +357,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setAssets(latest.assets.map((asset) => fromServer(asset)))
           publishCourts(serverCourts(latest))
           publishBallTracks(tracks)
+          setModels(latest.models ?? [])
           setStorageWarning(null)
         } catch (error) {
           if (!active) return
           console.error(error)
           setAssets(latest.assets.map((asset) => fromServer(asset)))
           publishCourts(serverCourts(latest))
+          setModels(latest.models ?? [])
           publishBallTracks({ ...readLocalBallTracks(session.id), ...tracksById(latest.ballTracks) })
           setStorageWarning('Some files saved in this browser have not reached the server yet.')
         }
@@ -368,12 +414,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       sessionId,
       courts,
       ballTracks,
+      models,
       backend,
       addAsset,
       removeAsset,
       noteCameras,
       setCourt,
       setBallTrack,
+      addModel,
+      editModel,
+      removeModel,
     }),
     [
       assets,
@@ -382,12 +432,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       sessionId,
       courts,
       ballTracks,
+      models,
       backend,
       addAsset,
       removeAsset,
       noteCameras,
       setCourt,
       setBallTrack,
+      addModel,
+      editModel,
+      removeModel,
     ],
   )
 

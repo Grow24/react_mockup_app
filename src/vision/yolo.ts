@@ -3,7 +3,8 @@ import type { Box, Detection } from '../types'
 
 export { OBJECT_MODEL_ID, ONNX_MODEL_ID }
 
-export type ObjectDetectorId = typeof OBJECT_MODEL_ID | typeof ONNX_MODEL_ID
+// MediaPipe, the built-in YOLOv8n, or the id of a custom model in the session.
+export type ObjectDetectorId = string
 
 export const YOLO_INPUT = 640
 export const YOLO_MODEL_URL =
@@ -118,6 +119,24 @@ function iou(a: Box, b: Box) {
 export type DecodeOptions = {
   classes?: readonly number[]
   minScore?: number
+  classCount?: number
+  labels?: readonly string[]
+}
+
+// With the class count known, a YOLOv8 output has 4 + classes rows and YOLOv5 has 5 + classes.
+function layoutOf(dims: readonly number[], classCount: number | undefined) {
+  if (classCount) {
+    for (const extra of [4, 5]) {
+      const rows = classCount + extra
+      if (dims[1] === rows) return { channelsFirst: true, channels: rows, classOffset: extra }
+      if (dims[2] === rows) return { channelsFirst: false, channels: rows, classOffset: extra }
+    }
+    return null
+  }
+  const channelsFirst = dims[1] === 84 || dims[1] === 85
+  const channels = channelsFirst ? dims[1]! : dims[2]!
+  const classOffset = channels === 85 ? 5 : channels >= 84 ? 4 : -1
+  return classOffset < 0 ? null : { channelsFirst, channels, classOffset }
 }
 
 export function decodeYolo(
@@ -131,12 +150,12 @@ export function decodeYolo(
   const minScore = options.minScore ?? 0.25
   const only = options.classes && options.classes.length > 0 ? options.classes : null
   if (dims.length < 3 || srcWidth < 2 || srcHeight < 2) return []
-  const channelsFirst = dims[1] === 84 || dims[1] === 85
+  const layout = layoutOf(dims, options.classCount)
+  if (!layout) return []
+  const { channelsFirst, channels, classOffset } = layout
   const anchors = channelsFirst ? dims[2]! : dims[1]!
-  const channels = channelsFirst ? dims[1]! : dims[2]!
-  const classOffset = channels === 85 ? 5 : channels >= 84 ? 4 : -1
-  if (classOffset < 0) return []
   const classCount = channels - classOffset
+  const labels = options.labels ?? COCO_LABELS
   const at = (anchor: number, channel: number) =>
     channelsFirst ? data[channel * anchors + anchor]! : data[anchor * channels + channel]!
   const fitted = letterbox(srcWidth, srcHeight, inputSize)
@@ -170,7 +189,7 @@ export function decodeYolo(
     }
     if (box.x >= srcWidth || box.y >= srcHeight) continue
     found.push({
-      label: COCO_LABELS[bestClass] ?? 'object',
+      label: labels[bestClass] ?? `class ${bestClass}`,
       score: bestScore,
       box,
     })

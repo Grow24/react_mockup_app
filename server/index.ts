@@ -1,6 +1,9 @@
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
+import { Readable } from 'node:stream'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import {
@@ -10,7 +13,13 @@ import {
   openStore,
   readAssetFile,
   createTake,
+  deleteModel,
   latestTake,
+  mediaPath,
+  readModel,
+  saveModel,
+  updateModel,
+  type ModelDetails,
   saveBallTrack,
   saveCourt,
   saveAsset,
@@ -19,6 +28,7 @@ import {
 } from './store.ts'
 import {
   BALL_TRACK_LIMIT,
+  MAX_MODEL_BYTES,
   TAKE_LEAD_MS,
   TAKE_SECONDS,
   type AiSnapshot,
@@ -278,6 +288,89 @@ function asSnapshot(value: unknown): AiSnapshot | null | undefined {
   return next
 }
 
+function asModelDetails(value: unknown): ModelDetails | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const details = value as Partial<ModelDetails>
+  const name = typeof details.name === 'string' ? details.name.trim().slice(0, 80) : ''
+  if (!name) return undefined
+  const inputSize = details.inputSize
+  if (typeof inputSize !== 'number' || !Number.isInteger(inputSize) || inputSize < 32 || inputSize > 2048 || inputSize % 32) {
+    return undefined
+  }
+  if (!Array.isArray(details.labels) || details.labels.length === 0 || details.labels.length > 1000) return undefined
+  const labels = details.labels.map((label, index) =>
+    typeof label === 'string' && label.trim() ? label.trim().slice(0, 60) : `class ${index}`,
+  )
+  if (!Array.isArray(details.ballClasses) || details.ballClasses.length > labels.length) return undefined
+  const ballClasses = [...new Set(details.ballClasses)]
+  if (ballClasses.some((item) => typeof item !== 'number' || !Number.isInteger(item) || item < 0 || item >= labels.length)) {
+    return undefined
+  }
+  return { name, inputSize, labels, ballClasses: ballClasses.sort((a, b) => a - b) }
+}
+
+function privateAddress(address: string) {
+  if (isIP(address) === 4) {
+    const [a, b] = address.split('.').map(Number) as [number, number]
+    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+  }
+  const lower = address.toLowerCase()
+  return lower === '::1' || lower === '::' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80') || lower.startsWith('::ffff:')
+}
+
+// The model link is fetched by the server so browser CORS rules do not apply, which means it must
+// never be allowed to reach this server's own network.
+async function publicUrl(raw: string) {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:' || url.username || url.password) return null
+  const host = url.hostname.replace(/^\[|\]$/g, '')
+  const addresses = isIP(host) ? [host] : (await lookup(host, { all: true }).catch(() => [])).map((item) => item.address)
+  if (addresses.length === 0 || addresses.some(privateAddress)) return null
+  return url
+}
+
+async function proxyModel(raw: string, res: ServerResponse) {
+  let target = await publicUrl(raw)
+  for (let hop = 0; target && hop < 5; hop += 1) {
+    const response = await fetch(target, { redirect: 'manual' }).catch(() => null)
+    if (!response) {
+      sendJson(res, 502, { error: 'The model link could not be reached.' })
+      return
+    }
+    const location = response.headers.get('location')
+    if (response.status >= 300 && response.status < 400 && location) {
+      target = await publicUrl(new URL(location, target).toString())
+      continue
+    }
+    if (!response.ok || !response.body) {
+      sendJson(res, 502, { error: `The model link answered ${response.status}.` })
+      return
+    }
+    // fetch decompresses the body, so the upstream length can be shorter than what is sent on.
+    const declared = response.headers.get('content-encoding') ? 0 : Number(response.headers.get('content-length') ?? 0)
+    if (declared > MAX_MODEL_BYTES) {
+      sendJson(res, 413, { error: 'The model is larger than 200 MB.' })
+      return
+    }
+    cors(res)
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' })
+    let sent = 0
+    const body = Readable.fromWeb(response.body as never)
+    body.on('data', (chunk: Buffer) => {
+      sent += chunk.length
+      if (sent > MAX_MODEL_BYTES) body.destroy(new Error('The model is larger than 200 MB.'))
+    })
+    await pipeline(body, res).catch(() => res.destroy())
+    return
+  }
+  sendJson(res, 400, { error: 'Use a public https link to the .onnx file.' })
+}
+
 async function formRequest(req: IncomingMessage) {
   const host = req.headers.host ?? '127.0.0.1'
   return new Request(`http://${host}${req.url ?? '/'}`, {
@@ -383,6 +476,101 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     sendJson(res, 200, session)
     return
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/fetch-model') {
+    await proxyModel(url.searchParams.get('url') ?? '', res)
+    return
+  }
+
+  if (parts[0] === 'api' && parts[1] === 'sessions' && parts[3] === 'models' && parts.length === 4 && req.method === 'POST') {
+    if (!isUuid(parts[2]!)) {
+      sendJson(res, 400, { error: 'Session id is not valid.' })
+      return
+    }
+    const form = await (await formRequest(req)).formData()
+    const file = form.get('file')
+    const metaText = form.get('meta')
+    if (!(file instanceof File) || typeof metaText !== 'string') {
+      sendJson(res, 400, { error: 'A model file and its details are required.' })
+      return
+    }
+    if (file.size > MAX_MODEL_BYTES) {
+      sendJson(res, 413, { error: 'The model is larger than 200 MB.' })
+      return
+    }
+    let meta: { id?: unknown } & Record<string, unknown>
+    try {
+      meta = JSON.parse(metaText) as typeof meta
+    } catch {
+      sendJson(res, 400, { error: 'Model details could not be read.' })
+      return
+    }
+    const details = asModelDetails(meta)
+    if (typeof meta.id !== 'string' || !isUuid(meta.id) || !details) {
+      sendJson(res, 400, { error: 'Model details are not valid.' })
+      return
+    }
+    const bytes = Buffer.from(await file.arrayBuffer())
+    if (bytes[0] !== 0x08) {
+      sendJson(res, 400, { error: 'This file is not an ONNX model.' })
+      return
+    }
+    const saved = await saveModel(parts[2]!, meta.id.toLowerCase(), details, bytes)
+    if (saved === 'conflict') {
+      sendJson(res, 409, { error: 'That model id is already used.' })
+      return
+    }
+    if (!saved) {
+      sendJson(res, 404, { error: 'Session was not found.' })
+      return
+    }
+    sendJson(res, 200, saved)
+    return
+  }
+
+  if (parts[0] === 'api' && parts[1] === 'custom-models' && isUuid(parts[2] ?? '')) {
+    const id = parts[2]!.toLowerCase()
+    if (parts.length === 4 && parts[3] === 'file' && req.method === 'GET') {
+      const model = readModel(id)
+      const stored = mediaPath(id)
+      if (!model || !existsSync(stored)) {
+        sendJson(res, 404, { error: 'Model was not found.' })
+        return
+      }
+      cors(res)
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': statSync(stored).size,
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      })
+      await pipeline(createReadStream(stored), res).catch(() => undefined)
+      return
+    }
+    if (parts.length === 3 && req.method === 'PUT') {
+      const body = await readBody(req)
+      const details = body ? asModelDetails(body) : undefined
+      if (!details) {
+        sendJson(res, 400, { error: 'Model details are not valid.' })
+        return
+      }
+      const session = updateModel(id, details)
+      if (!session) {
+        sendJson(res, 404, { error: 'Model was not found.' })
+        return
+      }
+      sendJson(res, 200, session)
+      return
+    }
+    if (parts.length === 3 && req.method === 'DELETE') {
+      const session = await deleteModel(id)
+      if (!session) {
+        sendJson(res, 404, { error: 'Model was not found.' })
+        return
+      }
+      sendJson(res, 200, session)
+      return
+    }
   }
 
   if (parts[0] === 'api' && parts[1] === 'sessions' && parts[3] === 'takes' && isUuid(parts[2] ?? '')) {

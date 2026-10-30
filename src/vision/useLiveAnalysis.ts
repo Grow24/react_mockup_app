@@ -5,20 +5,21 @@ import { useAi } from './context'
 import { readDetections, readPose } from './engine'
 import { detectSource } from './onnxDetector'
 import { emptyPerformance, noteInference } from './performance'
-import { ONNX_MODEL_ID } from './yolo'
 
 export function useLiveAnalysis(
   videoRef: RefObject<HTMLVideoElement | null>,
   active: boolean,
 ) {
-  const { engines, confidence, objectDetector, publish } = useAi()
+  const { engines, confidence, objectDetector, objectModel, publish } = useAi()
   const confidenceRef = useRef(confidence)
   const detectorRef = useRef(objectDetector)
+  const modelRef = useRef(objectModel)
 
   useEffect(() => {
     confidenceRef.current = confidence
     detectorRef.current = objectDetector
-  }, [confidence, objectDetector])
+    modelRef.current = objectModel
+  }, [confidence, objectDetector, objectModel])
 
   useEffect(() => {
     if (!active || !engines) return
@@ -59,8 +60,8 @@ export function useLiveAnalysis(
           worldPose = reading.worldPose
           inferenceMs = reading.inferenceMs
           mode = 'detect'
-        } else if (detectorRef.current === ONNX_MODEL_ID) {
-          const reading = await detectSource(video, video.videoWidth, video.videoHeight)
+        } else if (modelRef.current) {
+          const reading = await detectSource(video, video.videoWidth, video.videoHeight, { model: modelRef.current })
           if (stopped) return
           if (!reading) {
             timer = window.setTimeout(tick, 40)

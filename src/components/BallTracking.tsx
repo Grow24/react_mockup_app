@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { BallPoint, BallTrack, CourtCalibration, CourtPoint, CourtPreset } from '../../shared/contracts.ts'
 import { BallFlight } from './BallFlight'
+import { BallModelSelect } from './BallModelSelect'
+import { useBallModel } from '../vision/useBallModel'
 import { courtFitsTrack, groundPoints, pointAt, trailAt } from '../vision/ball'
 import { BALL_SAMPLE_FPS, trackBall } from '../vision/ballTracker'
 import { courtMeters, courtPixelSize } from '../vision/court'
@@ -218,6 +220,7 @@ export function BallPanel({
   const [progress, setProgress] = useState<Progress | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
+  const ballModel = useBallModel()
   const abortRef = useRef<AbortController | null>(null)
   const running = progress !== null
 
@@ -232,9 +235,15 @@ export function BallPanel({
     setMessage(null)
     setFailed(false)
     setProgress({ done: 0, total: 0, found: 0 })
-    trackBall(url, assetId, controller.signal, (done, total, found) => {
-      if (!controller.signal.aborted) setProgress({ done, total, found })
-    })
+    trackBall(
+      url,
+      assetId,
+      controller.signal,
+      (done, total, found) => {
+        if (!controller.signal.aborted) setProgress({ done, total, found })
+      },
+      ballModel.model,
+    )
       .then((next) => {
         if (controller.signal.aborted) return
         onSave(next)
@@ -269,9 +278,18 @@ export function BallPanel({
     <section className="still-pose ball-panel" aria-label="Ball tracking">
       <h4>Ball tracking</h4>
       <p className="muted">
-        YOLOv8n looks for a sports ball in {BALL_SAMPLE_FPS} frames per second of this video and links
-        the hits into one path. The first run downloads about 12 MB.
+        {ballModel.model.builtIn
+          ? `YOLOv8n looks for a sports ball in ${BALL_SAMPLE_FPS} frames per second of this video and links the hits into one path. The first run downloads about 12 MB.`
+          : `${ballModel.model.name} looks for ${ballModel.model.ballClasses.map((index) => ballModel.model.labels[index]).join(', ') || 'a ball'} in ${BALL_SAMPLE_FPS} frames per second of this video and links the hits into one path.`}
       </p>
+      {ballModel.choices.length > 1 ? (
+        <BallModelSelect
+          model={ballModel.model}
+          choices={ballModel.choices}
+          onChange={ballModel.choose}
+          disabled={running}
+        />
+      ) : null}
       <div className="controls">
         {running ? (
           <button type="button" className="secondary" onClick={stop}>

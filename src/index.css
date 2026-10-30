@@ -331,6 +331,29 @@ select {
 
 .note { color: #0f6a64; }
 
+.text-input {
+  width: 100%;
+  background: #fff;
+  border: 1px solid #ddd4c8;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  color: inherit;
+}
+.model-add { display: grid; gap: 4px; margin-top: 12px; }
+.model-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid #e4dcd1;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.model-classes { border: 0; padding: 0; margin: 0 0 10px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.model-classes legend { font-size: 0.85rem; color: #5f574e; margin-bottom: 6px; }
+
 .line-call-box { display: grid; gap: 4px; margin-top: 10px; }
 .line-call {
   justify-self: start;

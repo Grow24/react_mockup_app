@@ -51,6 +51,21 @@ export type AiModel = {
   task: 'object-detection' | 'pose'
 }
 
+// A YOLOv8 or YOLOv5 ONNX export, for example from Roboflow or Ultralytics, shared in one session.
+export type CustomModel = {
+  id: string
+  sessionId: string
+  name: string
+  inputSize: number
+  labels: string[]
+  ballClasses: number[]
+  byteLength: number
+  createdAt: number
+  fileUrl: string
+}
+
+export const MAX_MODEL_BYTES = 200 * 1024 * 1024
+
 export type Device = {
   id: string
   label: string
@@ -171,4 +186,5 @@ export type SessionDetail = CaptureSession & {
   court: CourtCalibration | null
   courts: CourtCalibration[]
   ballTracks: BallTrack[]
+  models: CustomModel[]
 }

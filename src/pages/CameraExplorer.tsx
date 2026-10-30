@@ -5,6 +5,7 @@ import { useCamera } from '../camera/useCamera'
 import { useSyncedTake } from '../camera/useSyncedTake'
 import { AiControls } from '../components/AiControls'
 import { AnnotationCanvas } from '../components/AnnotationCanvas'
+import { BallModelSelect } from '../components/BallModelSelect'
 import { LiveBallOverlay } from '../components/LiveBallOverlay'
 import { framePath, framePathLabel } from '../camera/webcodecs'
 import { formatClock, formatRange, formatSetting } from '../format'
@@ -12,6 +13,7 @@ import { courtFor, deviceId as ownDeviceId } from '../session/api'
 import { useSession } from '../session/context'
 import { useAi } from '../vision/context'
 import { useLiveAnalysis } from '../vision/useLiveAnalysis'
+import { useBallModel } from '../vision/useBallModel'
 import { useLiveBall, type LiveBounce } from '../vision/useLiveBall'
 
 function bounceLine(bounce: LiveBounce, now: number) {
@@ -39,7 +41,8 @@ export function CameraExplorer() {
   const previewOn = camera.status === 'live' && !camera.busy
   const showOverlay = !previewOn
   const ownCourt = courtFor(courts, ownDeviceId())
-  const liveBall = useLiveBall(previewRef, ballOn && previewOn, ownCourt)
+  const ballModel = useBallModel()
+  const liveBall = useLiveBall(previewRef, ballOn && previewOn, ownCourt, ballModel.model)
   useEffect(() => {
     trackRef.current = ballOn ? liveBall.trackBetween : () => null
   })
@@ -215,9 +218,13 @@ export function CameraExplorer() {
               ) : null}
             </header>
             <p className="muted">
-              YOLOv8n follows the ball on the preview and calls each bounce. A video recorded while this is
-              on keeps the live track, so Results has it straight away.
+              {ballModel.model.builtIn ? 'YOLOv8n' : ballModel.model.name} follows the ball on the preview and
+              calls each bounce. A video recorded while this is on keeps the live track, so Results has it
+              straight away.
             </p>
+            {ballModel.choices.length > 1 ? (
+              <BallModelSelect model={ballModel.model} choices={ballModel.choices} onChange={ballModel.choose} />
+            ) : null}
             <button
               type="button"
               className={ballOn ? 'secondary' : 'primary'}

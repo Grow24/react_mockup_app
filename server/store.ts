@@ -11,6 +11,7 @@ import {
   type BallTrack,
   type CameraRecord,
   type CourtCalibration,
+  type CustomModel,
   type Device,
   type InferenceResult,
   type MediaAssetRecord,
@@ -71,6 +72,16 @@ const schema = `
     court_json TEXT NOT NULL,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, device_id)
+  );
+  CREATE TABLE IF NOT EXISTS custom_models (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    input_size INTEGER NOT NULL,
+    labels_json TEXT NOT NULL,
+    ball_classes_json TEXT NOT NULL,
+    byte_length INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS takes (
     id TEXT PRIMARY KEY,
@@ -254,6 +265,7 @@ export function getSession(id: string): SessionDetail | undefined {
     court: courts[0] ?? null,
     courts,
     ballTracks: readBallTracks(id),
+    models: modelsFor(id),
   }
 }
 
@@ -332,6 +344,89 @@ export function saveCourt(sessionId: string, deviceId: string, court: CourtCalib
   }
   database().prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(Date.now(), sessionId)
   return getSession(sessionId)
+}
+
+type ModelRow = {
+  id: string
+  session_id: string
+  name: string
+  input_size: number
+  labels_json: string
+  ball_classes_json: string
+  byte_length: number
+  created_at: number
+}
+
+function toModel(row: ModelRow): CustomModel {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    name: row.name,
+    inputSize: row.input_size,
+    labels: JSON.parse(row.labels_json) as string[],
+    ballClasses: JSON.parse(row.ball_classes_json) as number[],
+    byteLength: row.byte_length,
+    createdAt: row.created_at,
+    fileUrl: `/api/custom-models/${row.id}/file`,
+  }
+}
+
+function modelsFor(sessionId: string) {
+  const rows = database()
+    .prepare('SELECT * FROM custom_models WHERE session_id = ? ORDER BY created_at DESC')
+    .all(sessionId) as ModelRow[]
+  return rows.map(toModel)
+}
+
+export function readModel(id: string) {
+  const row = database().prepare('SELECT * FROM custom_models WHERE id = ?').get(id) as ModelRow | undefined
+  return row ? toModel(row) : undefined
+}
+
+export type ModelDetails = Pick<CustomModel, 'name' | 'inputSize' | 'labels' | 'ballClasses'>
+
+export async function saveModel(sessionId: string, id: string, details: ModelDetails, bytes: Buffer) {
+  if (!sessionById(sessionId)) return undefined
+  if (readModel(id)) return 'conflict' as const
+  await writeFile(mediaPath(id), bytes)
+  try {
+    database()
+      .prepare(
+        `INSERT INTO custom_models (id, session_id, name, input_size, labels_json, ball_classes_json, byte_length, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        sessionId,
+        details.name,
+        details.inputSize,
+        JSON.stringify(details.labels),
+        JSON.stringify(details.ballClasses),
+        bytes.byteLength,
+        Date.now(),
+      )
+  } catch (error) {
+    await unlink(mediaPath(id)).catch(() => undefined)
+    throw error
+  }
+  return getSession(sessionId)
+}
+
+export function updateModel(id: string, details: ModelDetails) {
+  const model = readModel(id)
+  if (!model) return undefined
+  database()
+    .prepare('UPDATE custom_models SET name = ?, input_size = ?, labels_json = ?, ball_classes_json = ? WHERE id = ?')
+    .run(details.name, details.inputSize, JSON.stringify(details.labels), JSON.stringify(details.ballClasses), id)
+  return getSession(model.sessionId)
+}
+
+export async function deleteModel(id: string) {
+  const model = readModel(id)
+  if (!model) return undefined
+  database().prepare('DELETE FROM custom_models WHERE id = ?').run(id)
+  await unlink(mediaPath(id)).catch(() => undefined)
+  return getSession(model.sessionId)
 }
 
 type TakeRow = { id: string; session_id: string; start_at: number; seconds: number; created_at: number; created_by: string }
