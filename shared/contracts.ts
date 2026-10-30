@@ -254,6 +254,10 @@ export type TrainingSet = {
 export const TRAINING_LIMITS = { classes: 100, boxes: 300, images: 5000, imageBytes: 20 * 1024 * 1024 } as const
 
 export type SessionDetail = CaptureSession & {
+  /** True once the session has a key; without it nothing in the session can be read or changed. */
+  locked: boolean
+  /** Sent once, when the session is created or made private. Keep it to share or reopen the session. */
+  key?: string
   assets: MediaAssetRecord[]
   court: CourtCalibration | null
   courts: CourtCalibration[]

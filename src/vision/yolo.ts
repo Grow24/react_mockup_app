@@ -1,5 +1,5 @@
 import { OBJECT_MODEL_ID, ONNX_MODEL_ID } from '../../shared/contracts.ts'
-import type { Box, Detection } from '../types'
+import type { Box, Detection } from '../types.ts'
 
 export { OBJECT_MODEL_ID, ONNX_MODEL_ID }
 

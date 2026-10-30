@@ -10,6 +10,7 @@ export type SessionValue = {
   ready: boolean
   storageWarning: string | null
   sessionId: string | null
+  locked: boolean
   backend: BackendStatus
   courts: CourtCalibration[]
   ballTracks: Record<string, BallTrack>
@@ -18,6 +19,7 @@ export type SessionValue = {
   removeAsset: (id: string) => void
   noteCameras: (cameras: CameraRecord[]) => void
   setCourt: (deviceKey: string, court: CourtCalibration | null) => void
+  makePrivate: () => Promise<void>
   setBallTrack: (assetId: string, track: BallTrack | null) => void
   addModel: (details: ModelDetails, bytes: ArrayBuffer) => Promise<string>
   editModel: (id: string, details: ModelDetails) => Promise<void>

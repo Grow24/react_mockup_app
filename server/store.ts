@@ -1,5 +1,6 @@
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { unlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import {
@@ -26,7 +27,9 @@ import {
 } from '../shared/contracts.ts'
 
 let mediaDir = path.join(path.resolve(process.cwd(), 'server/data'), 'media')
+let dataDir = path.resolve(process.cwd(), 'server/data')
 let db: DatabaseSync | undefined
+let DatabaseCtor: typeof import('node:sqlite').DatabaseSync | undefined
 
 const schema = `
   PRAGMA journal_mode = DELETE;
@@ -126,18 +129,17 @@ const schema = `
 `
 
 // Columns added after the first release; older databases get them on open.
-const assetColumns = [
-  ['device_id', 'TEXT'],
-  ['take_id', 'TEXT'],
-  ['started_at', 'INTEGER'],
+const addedColumns = [
+  ['assets', 'device_id', 'TEXT'],
+  ['assets', 'take_id', 'TEXT'],
+  ['assets', 'started_at', 'INTEGER'],
+  ['sessions', 'key_hash', 'TEXT'],
 ] as const
 
 function migrate(opened: DatabaseSync) {
-  const present = new Set(
-    (opened.prepare('PRAGMA table_info(assets)').all() as { name: string }[]).map((column) => column.name),
-  )
-  for (const [name, type] of assetColumns) {
-    if (!present.has(name)) opened.exec(`ALTER TABLE assets ADD COLUMN ${name} ${type}`)
+  for (const [table, name, type] of addedColumns) {
+    const present = (opened.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some((column) => column.name === name)
+    if (!present) opened.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`)
   }
   opened.exec('BEGIN')
   try {
@@ -180,11 +182,13 @@ function openAt(DatabaseSyncCtor: typeof import('node:sqlite').DatabaseSync, dir
 export async function openStore() {
   if (db) return
   const { DatabaseSync: DatabaseSyncCtor } = await import('node:sqlite')
-  const preferred = path.resolve(process.cwd(), 'server/data')
+  DatabaseCtor = DatabaseSyncCtor
+  const preferred = path.resolve(process.cwd(), process.env.PBMP_DATA_DIR || 'server/data')
   try {
     const opened = openAt(DatabaseSyncCtor, preferred)
     db = opened.opened
     mediaDir = opened.media
+    dataDir = preferred
     console.log(`PBMP data directory ${preferred}`)
     return
   } catch (error) {
@@ -194,7 +198,69 @@ export async function openStore() {
   const opened = openAt(DatabaseSyncCtor, fallback)
   db = opened.opened
   mediaDir = opened.media
+  dataDir = fallback
   console.log(`PBMP data directory ${fallback}`)
+}
+
+export type DataStats = { sessions: number; assets: number; workouts: number; models: number; trainingImages: number; mediaFiles: number; mediaBytes: number }
+
+export function dataStats(): DataStats {
+  const count = (table: string) => (database().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+  let mediaFiles = 0
+  let mediaBytes = 0
+  for (const name of existsSync(mediaDir) ? readdirSync(mediaDir) : []) {
+    mediaFiles += 1
+    mediaBytes += statSync(path.join(mediaDir, name)).size
+  }
+  return {
+    sessions: count('sessions'),
+    assets: count('assets'),
+    workouts: (database().prepare('SELECT COUNT(*) AS n FROM workouts WHERE deleted = 0').get() as { n: number }).n,
+    models: count('custom_models'),
+    trainingImages: count('training_images'),
+    mediaFiles,
+    mediaBytes,
+  }
+}
+
+// A consistent copy of the database plus every media file, ready to stream as a tar archive.
+export function backupFiles() {
+  const folder = path.join(tmpdir(), `pbmp-backup-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  mkdirSync(folder, { recursive: true })
+  const snapshot = path.join(folder, 'pbmp.sqlite')
+  database().prepare('VACUUM INTO ?').run(snapshot)
+  const files = [{ name: 'pbmp.sqlite', path: snapshot, size: statSync(snapshot).size, mtime: Date.now() }]
+  for (const name of existsSync(mediaDir) ? readdirSync(mediaDir) : []) {
+    const file = path.join(mediaDir, name)
+    const info = statSync(file)
+    if (info.isFile()) files.push({ name: `media/${name}`, path: file, size: info.size, mtime: info.mtimeMs })
+  }
+  return { files, cleanup: () => rmSync(folder, { recursive: true, force: true }) }
+}
+
+export function restoreFolder() {
+  const folder = path.join(dataDir, `.restore-${Date.now()}`)
+  mkdirSync(folder, { recursive: true })
+  return folder
+}
+
+// Swaps in an unpacked backup. Only an empty store is replaced, so a restore never overwrites data.
+export function applyRestore(folder: string) {
+  if (!DatabaseCtor) throw new Error('The session store is not open.')
+  if (dataStats().sessions > 0) throw new Error('This server already has sessions, so it was not overwritten.')
+  if (!existsSync(path.join(folder, 'pbmp.sqlite'))) throw new Error('The backup has no pbmp.sqlite.')
+  database().close()
+  db = undefined
+  const media = path.join(dataDir, 'media')
+  rmSync(path.join(dataDir, 'pbmp.sqlite'), { force: true })
+  rmSync(media, { recursive: true, force: true })
+  renameSync(path.join(folder, 'pbmp.sqlite'), path.join(dataDir, 'pbmp.sqlite'))
+  if (existsSync(path.join(folder, 'media'))) renameSync(path.join(folder, 'media'), media)
+  rmSync(folder, { recursive: true, force: true })
+  const opened = openAt(DatabaseCtor, dataDir)
+  db = opened.opened
+  mediaDir = opened.media
+  return dataStats()
 }
 
 export function listModels() {
@@ -291,6 +357,7 @@ export function getSession(id: string): SessionDetail | undefined {
     id: row.id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    locked: sessionKeyHash(id) != null,
     device: JSON.parse(row.device_json) as Device,
     cameras: camerasFor(id),
     assets: assetsFor(id),
@@ -660,6 +727,21 @@ export function latestTake(sessionId: string) {
     .prepare('SELECT * FROM takes WHERE session_id = ? ORDER BY created_at DESC LIMIT 1')
     .get(sessionId) as TakeRow | undefined
   return row ? toTake(row) : null
+}
+
+/** The stored hash of a session's key: null for an open session, undefined for no such session. */
+export function sessionKeyHash(id: string) {
+  const row = database().prepare('SELECT key_hash FROM sessions WHERE id = ?').get(id) as { key_hash: string | null } | undefined
+  return row ? row.key_hash : undefined
+}
+
+export function setSessionKeyHash(id: string, hash: string) {
+  database().prepare('UPDATE sessions SET key_hash = ?, updated_at = ? WHERE id = ?').run(hash, Date.now(), id)
+}
+
+export function assetSession(id: string) {
+  const row = database().prepare('SELECT session_id FROM assets WHERE id = ?').get(id) as { session_id: string } | undefined
+  return row?.session_id
 }
 
 export function saveSession(id: string, device: Device) {

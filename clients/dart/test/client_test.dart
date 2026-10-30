@@ -46,6 +46,12 @@ void main() {
       expect(clock.roundTripMs, lessThan(2000));
       final session = await client.openSession(sessionId, Device(id: deviceId, label: 'Dart test', userAgent: 'dart'));
       expect(session.id, sessionId);
+      expect(session.locked, isTrue);
+      final key = client.sessionKey!;
+      final stranger = PbmpClient(baseUrl);
+      await expectLater(stranger.getSession(sessionId), throwsA(isA<PbmpException>().having((error) => error.status, 'status', 403)));
+      expect((await stranger.unlock(sessionId, key))?.id, sessionId);
+      stranger.close();
       expect(await client.getSession(uuid()), isNull);
 
       final bytes = Uint8List.fromList(List<int>.generate(2048, (index) => index % 251));

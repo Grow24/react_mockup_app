@@ -56,6 +56,14 @@ cd clients/kotlin && ./gradlew build
 cd clients/swift && swift test
 ```
 
+## Private sessions
+
+Every new session has a key, and nothing in it can be read or changed without that key.
+`openSession` keeps a new session's key in `sessionKey`, and it is sent as the `X-Session-Key`
+header on every call. To open a session someone shared, take `session` and `key` from the link
+(`https://…/?session=…&key=…`) and call `unlock(sessionId, key)`. Sessions made before keys existed
+stay open until someone presses Make private in the web app.
+
 ## Sync rules
 
 - Times are milliseconds since the epoch. Call `syncClock()` and use `serverNow()` for `startedAt`,

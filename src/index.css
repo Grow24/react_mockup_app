@@ -71,8 +71,10 @@ h1, h2, h3 {
 
 .session-line a {
   color: #0f6a64;
-  margin-left: 8px;
 }
+.session-line .pill { margin-right: 4px; }
+.session-copy { color: #0f6a64; font-size: 0.78rem; text-decoration: underline; }
+.session-note { color: #0f6a64; }
 
 .tabs {
   display: flex;

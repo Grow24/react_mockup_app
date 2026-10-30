@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22.21.0
+
+jobs:
+  checks:
+    name: Lint, types, unit and API tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc -b
+      - run: npm test
+      - run: npm run build
+
+  e2e:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+
+  clients:
+    name: Dart and Kotlin clients
+    runs-on: ubuntu-latest
+    needs: checks
+    env:
+      PBMP_BASE_URL: http://127.0.0.1:8787
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Start the API
+        run: |
+          PBMP_DATA_DIR="$RUNNER_TEMP/pbmp-data" PORT=8787 node --experimental-strip-types server/index.ts &
+          for attempt in $(seq 1 60); do curl -sf "$PBMP_BASE_URL/api/models" >/dev/null && exit 0; sleep 1; done
+          exit 1
+      - uses: dart-lang/setup-dart@v1
+      - name: Dart client
+        working-directory: clients/dart
+        run: |
+          dart pub get
+          dart analyze
+          dart test
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Kotlin client
+        working-directory: clients/kotlin
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon build
+
+  swift:
+    name: Swift client on macOS
+    runs-on: macos-latest
+    needs: checks
+    env:
+      PBMP_BASE_URL: http://127.0.0.1:8787
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Start the API
+        run: |
+          PBMP_DATA_DIR="$RUNNER_TEMP/pbmp-data" PORT=8787 node --experimental-strip-types server/index.ts &
+          for attempt in $(seq 1 60); do curl -sf "$PBMP_BASE_URL/api/models" >/dev/null && exit 0; sleep 1; done
+          exit 1
+      - name: Swift client
+        working-directory: clients/swift
+        run: swift test

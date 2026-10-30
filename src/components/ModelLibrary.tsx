@@ -58,7 +58,7 @@ function draftOf(model: CustomModel): Draft {
 }
 
 export function ModelLibrary() {
-  const { models, backend, addModel, editModel, removeModel } = useSession()
+  const { models, backend, sessionId, addModel, editModel, removeModel } = useSession()
   const [draft, setDraft] = useState<Draft | null>(null)
   const [link, setLink] = useState('')
   const [working, setWorking] = useState<string | null>(null)
@@ -90,7 +90,8 @@ export function ModelLibrary() {
     const target = link.trim()
     if (!target) return
     const name = decodeURIComponent(target.split(/[?#]/)[0]!.split('/').pop() ?? 'Model').replace(/\.onnx$/i, '')
-    void open(async () => ({ bytes: await fetchModelBytes(target), name }), 'Downloading the model through the server…')
+    if (!sessionId) return
+    void open(async () => ({ bytes: await fetchModelBytes(sessionId, target), name }), 'Downloading the model through the server…')
   }
 
   const labels = draft ? splitLabels(draft.labels) : []

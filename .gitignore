@@ -24,3 +24,6 @@ server/data
 *.njsproj
 *.sln
 *.sw?
+e2e/.cache
+test-results
+playwright-report

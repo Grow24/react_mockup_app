@@ -14,6 +14,9 @@ import {
   clearRemoteCourt,
   deleteRemoteAsset,
   deleteRemoteModel,
+  lockSession,
+  PrivateSessionError,
+  unlockSession,
   fetchSession,
   openSession,
   courtKeyOf,
@@ -93,6 +96,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false)
   const [storageWarning, setStorageWarning] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [locked, setLocked] = useState(false)
   const [courts, setCourtsState] = useState<CourtCalibration[]>([])
   const courtsRef = useRef<CourtCalibration[]>([])
   const [ballTracks, setBallTracksState] = useState<BallTracks>({})
@@ -237,6 +241,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     })
   }, [publishCourts])
 
+  const makePrivate = useCallback(async () => {
+    const id = sessionRef.current
+    if (!id || backendRef.current !== 'online') throw new Error('Making a session private needs the server.')
+    const session = await lockSession(id)
+    setLocked(session.locked)
+  }, [])
+
   const needServer = useCallback(() => {
     const id = sessionRef.current
     if (!id || backendRef.current !== 'online') throw new Error('Custom models need the server.')
@@ -329,9 +340,33 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     async function boot() {
       const asked = requestedSessionId()
-      const id = asked || rememberedSessionId() || crypto.randomUUID()
+      let id = asked || rememberedSessionId() || crypto.randomUUID()
+      let notice: string | null = null
       try {
-        const existing = asked ? await fetchSession(id) : null
+        const sharedKey = asked ? new URLSearchParams(window.location.search).get('key') : null
+        let existing = null
+        if (asked) {
+          try {
+            existing = sharedKey ? await unlockSession(id, sharedKey) : await fetchSession(id)
+          } catch (error) {
+            if (!(error instanceof PrivateSessionError) || !active) throw error
+            setStorageWarning(
+              sharedKey
+                ? 'That link has the wrong session key.'
+                : 'This session is private. Open it with its full link, which includes the key.',
+            )
+            setBackend('online')
+            backendRef.current = 'online'
+            setReady(true)
+            return
+          }
+          // The key is now a cookie, so it should not stay in the address bar or browser history.
+          if (sharedKey) {
+            const clean = new URL(window.location.href)
+            clean.searchParams.delete('key')
+            window.history.replaceState(null, '', clean)
+          }
+        }
         if (asked && !existing) {
           if (!active) return
           setStorageWarning('That session was not found on the server.')
@@ -340,8 +375,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setReady(true)
           return
         }
-        const session = existing ?? (await openSession(id, thisDevice()))
+        let session = existing
+        if (!session) {
+          try {
+            session = await openSession(id, thisDevice())
+          } catch (error) {
+            // This browser lost the key to its last session, so it starts a new one.
+            if (!(error instanceof PrivateSessionError)) throw error
+            id = crypto.randomUUID()
+            session = await openSession(id, thisDevice())
+            notice = 'Your last session is private and this browser no longer has its key, so a new one was started.'
+          }
+        }
         if (!active) return
+        setLocked(session.locked)
         rememberSessionId(session.id)
         sessionRef.current = session.id
         setSessionId(session.id)
@@ -358,7 +405,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           publishCourts(serverCourts(latest))
           publishBallTracks(tracks)
           setModels(latest.models ?? [])
-          setStorageWarning(null)
+          setStorageWarning(notice)
         } catch (error) {
           if (!active) return
           console.error(error)
@@ -412,6 +459,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ready,
       storageWarning,
       sessionId,
+      locked,
       courts,
       ballTracks,
       models,
@@ -420,6 +468,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       removeAsset,
       noteCameras,
       setCourt,
+      makePrivate,
       setBallTrack,
       addModel,
       editModel,
@@ -430,6 +479,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ready,
       storageWarning,
       sessionId,
+      locked,
       courts,
       ballTracks,
       models,
@@ -438,6 +488,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       removeAsset,
       noteCameras,
       setCourt,
+      makePrivate,
       setBallTrack,
       addModel,
       editModel,

@@ -1,0 +1,35 @@
+# Fly.io: fly launch --copy-config --no-deploy, then fly volumes create pbmp_data --size 10 --region bom,
+# then fly deploy. Change `app` to a name of your own.
+app = "pbmp-camera"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+
+# Sessions, videos, and models live on this volume, so they survive deploys.
+[[mounts]]
+  source = "pbmp_data"
+  destination = "/src/server/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # One machine owns the SQLite volume, so it stays on.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"
+    timeout = "5s"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

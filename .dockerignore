@@ -7,3 +7,6 @@ server-dist
 .idea
 *.local
 clients
+e2e/.cache
+test-results
+playwright-report

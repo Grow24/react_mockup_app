@@ -1,13 +1,14 @@
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import { Readable } from 'node:stream'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { DATASET_README, dataYaml, TRAIN_SCRIPT, vocXml, yoloLabel } from './dataset.ts'
+import { tarGzip, untarGzip } from './tar.ts'
 import { uploadToRoboflow } from './roboflow.ts'
 import { zip, type ZipEntry } from './zip.ts'
 import {
@@ -17,7 +18,11 @@ import {
   openStore,
   readAssetFile,
   addTrainingImage,
+  applyRestore,
+  backupFiles,
   createTake,
+  dataStats,
+  restoreFolder,
   deleteExercise,
   deleteTrainingImage,
   deleteModel,
@@ -40,6 +45,9 @@ import {
   saveAsset,
   saveCameras,
   saveSession,
+  assetSession,
+  sessionKeyHash,
+  setSessionKeyHash,
 } from './store.ts'
 import {
   BALL_TRACK_LIMIT,
@@ -82,7 +90,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 function cors(res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Session-Key')
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown) {
@@ -511,6 +519,74 @@ async function proxyModel(raw: string, res: ServerResponse) {
   sendJson(res, 400, { error: 'Use a public https link to the .onnx file.' })
 }
 
+// A session key is 256 random bits. Only its hash is stored. Browsers hold it in an HttpOnly
+// cookie so <img> and <video> requests carry it; native apps send it as X-Session-Key.
+function hashKey(key: string) {
+  return createHash('sha256').update(key).digest('hex')
+}
+
+function keyCookie(sessionId: string) {
+  return `pbmp_key_${sessionId.replace(/-/g, '')}`
+}
+
+function presentedKey(req: IncomingMessage, sessionId: string) {
+  const header = req.headers['x-session-key']
+  if (typeof header === 'string' && header) return header
+  const name = keyCookie(sessionId)
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const [key, ...value] = part.trim().split('=')
+    if (key === name) return decodeURIComponent(value.join('='))
+  }
+  return null
+}
+
+function keyMatches(hash: string, key: string | null) {
+  if (!key) return false
+  const given = Buffer.from(hashKey(key), 'hex')
+  const stored = Buffer.from(hash, 'hex')
+  return given.length === stored.length && timingSafeEqual(given, stored)
+}
+
+function canUseSession(req: IncomingMessage, sessionId: string) {
+  const hash = sessionKeyHash(sessionId)
+  if (hash === undefined) return 'missing' as const
+  return hash === null || keyMatches(hash, presentedKey(req, sessionId)) ? ('allowed' as const) : ('denied' as const)
+}
+
+function rememberKey(req: IncomingMessage, res: ServerResponse, sessionId: string, key: string) {
+  const secure = req.headers['x-forwarded-proto'] === 'https' || (req.socket as { encrypted?: boolean }).encrypted
+  res.setHeader(
+    'Set-Cookie',
+    `${keyCookie(sessionId)}=${encodeURIComponent(key)}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`,
+  )
+}
+
+// Backups are off unless ADMIN_TOKEN is set; the token goes in an Authorization: Bearer header.
+const MAX_RESTORE_BYTES = 50 * 1024 * 1024 * 1024
+
+function adminAllowed(req: IncomingMessage) {
+  const token = process.env.ADMIN_TOKEN ?? ''
+  if (token.length < 16) return false
+  const given = Buffer.from(createHash('sha256').update((req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')).digest('hex'), 'hex')
+  const wanted = Buffer.from(createHash('sha256').update(token).digest('hex'), 'hex')
+  return timingSafeEqual(given, wanted)
+}
+
+function newKey() {
+  return randomBytes(32).toString('base64url')
+}
+
+// Which session a request belongs to, so one check guards every route.
+function owningSession(parts: string[], url: URL) {
+  const id = parts[2] ?? ''
+  if (parts[1] === 'sessions' && parts.length >= 3 && isUuid(id)) return id
+  if (!isUuid(id)) return url.pathname === '/api/fetch-model' ? (url.searchParams.get('session') ?? '') : null
+  if (parts[1] === 'assets') return assetSession(id) ?? null
+  if (parts[1] === 'custom-models') return readModel(id.toLowerCase())?.sessionId ?? null
+  if (parts[1] === 'training-images') return readTrainingImage(id.toLowerCase())?.sessionId ?? null
+  return null
+}
+
 async function formRequest(req: IncomingMessage) {
   const host = req.headers.host ?? '127.0.0.1'
   return new Request(`http://${host}${req.url ?? '/'}`, {
@@ -570,7 +646,115 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       sendJson(res, 400, { error: 'A device id is required.' })
       return
     }
-    sendJson(res, 200, saveSession(id, device))
+    const access = canUseSession(req, id)
+    if (access === 'denied') {
+      sendJson(res, 403, { error: 'This session is private. Open it with its full link.' })
+      return
+    }
+    if (access === 'missing') {
+      const key = newKey()
+      saveSession(id, device)
+      setSessionKeyHash(id, hashKey(key))
+      rememberKey(req, res, id, key)
+      sendJson(res, 200, { ...getSession(id), key })
+      return
+    }
+    sendJson(res, 200, getSession(id))
+    return
+  }
+
+  // Opening a shared link: a correct key is kept as a cookie for this browser.
+  if (parts[0] === 'api' && parts[1] === 'sessions' && parts[3] === 'unlock' && parts.length === 4 && req.method === 'POST') {
+    const id = parts[2] ?? ''
+    const body = (await readBody(req)) as { key?: unknown } | undefined
+    const hash = isUuid(id) ? sessionKeyHash(id) : undefined
+    if (hash === undefined) {
+      sendJson(res, 404, { error: 'Session was not found.' })
+      return
+    }
+    const key = typeof body?.key === 'string' ? body.key : ''
+    if (hash !== null && !keyMatches(hash, key)) {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      sendJson(res, 403, { error: 'That session key is not right.' })
+      return
+    }
+    if (hash !== null) rememberKey(req, res, id, key)
+    sendJson(res, 200, getSession(id))
+    return
+  }
+
+  if (parts[0] === 'api' && parts[1] === 'admin') {
+    if (!adminAllowed(req)) {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      sendJson(res, 404, { error: 'Not found.' })
+      return
+    }
+    if (parts[2] === 'stats' && req.method === 'GET') {
+      sendJson(res, 200, dataStats())
+      return
+    }
+    if (parts[2] === 'backup' && req.method === 'GET') {
+      const backup = backupFiles()
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="pbmp-backup-${stamp}.tar.gz"`,
+        'Cache-Control': 'no-store',
+      })
+      await pipeline(tarGzip(backup.files), res).catch((error) => {
+        console.error('Backup stopped', error)
+        res.destroy()
+      })
+      backup.cleanup()
+      return
+    }
+    if (parts[2] === 'restore' && req.method === 'POST') {
+      if (dataStats().sessions > 0) {
+        sendJson(res, 409, { error: 'This server already has sessions, so it was not overwritten.' })
+        return
+      }
+      const folder = restoreFolder()
+      try {
+        await untarGzip(req, folder, MAX_RESTORE_BYTES)
+        sendJson(res, 200, applyRestore(folder))
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : 'The backup could not be restored.' })
+      }
+      return
+    }
+    sendJson(res, 404, { error: 'Not found.' })
+    return
+  }
+
+  const owner = parts[0] === 'api' ? owningSession(parts, url) : null
+  if (owner !== null) {
+    const access = isUuid(owner) ? canUseSession(req, owner) : 'missing'
+    if (access === 'missing' && url.pathname === '/api/fetch-model') {
+      sendJson(res, 400, { error: 'Model links are fetched for a session.' })
+      return
+    }
+    if (access === 'denied') {
+      sendJson(res, 403, { error: 'This session is private. Open it with its full link.' })
+      return
+    }
+  }
+
+  // An open session from before keys existed can be made private; whoever holds the link today does it.
+  if (parts[0] === 'api' && parts[1] === 'sessions' && parts[3] === 'lock' && parts.length === 4 && req.method === 'POST') {
+    const id = parts[2]!
+    const hash = sessionKeyHash(id)
+    if (hash === undefined) {
+      sendJson(res, 404, { error: 'Session was not found.' })
+      return
+    }
+    if (hash !== null) {
+      sendJson(res, 409, { error: 'This session is already private.' })
+      return
+    }
+    const key = newKey()
+    setSessionKeyHash(id, hashKey(key))
+    rememberKey(req, res, id, key)
+    sendJson(res, 200, { ...getSession(id), key })
     return
   }
 

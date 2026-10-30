@@ -58,21 +58,72 @@ async function errorText(response: Response) {
   }
 }
 
-export async function openSession(id: string, device: Device) {
-  const response = await fetch('/api/sessions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, device }),
-  })
+export class PrivateSessionError extends Error {}
+
+async function sessionReply(response: Response) {
+  if (response.status === 403) throw new PrivateSessionError(await errorText(response))
   if (!response.ok) throw new Error(await errorText(response))
-  return (await response.json()) as SessionDetail
+  const session = (await response.json()) as SessionDetail
+  if (session.key) rememberSessionKey(session.id, session.key)
+  return session
+}
+
+export async function openSession(id: string, device: Device) {
+  return sessionReply(
+    await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, device }),
+    }),
+  )
 }
 
 export async function fetchSession(id: string) {
   const response = await fetch(`/api/sessions/${id}`)
   if (response.status === 404) return null
-  if (!response.ok) throw new Error(await errorText(response))
-  return (await response.json()) as SessionDetail
+  return sessionReply(response)
+}
+
+// The server keeps the key as an HttpOnly cookie; this copy is only to build the share link.
+function keyStorage(id: string) {
+  return `pbmp-session-key:${id}`
+}
+
+export function rememberSessionKey(id: string, key: string) {
+  try {
+    localStorage.setItem(keyStorage(id), key)
+  } catch {
+    // The cookie still opens the session; only the share link loses its key.
+  }
+}
+
+export function sessionKey(id: string) {
+  try {
+    return localStorage.getItem(keyStorage(id))
+  } catch {
+    return null
+  }
+}
+
+export async function unlockSession(id: string, key: string) {
+  const response = await fetch(`/api/sessions/${id}/unlock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  })
+  if (response.status === 404) return null
+  const session = await sessionReply(response)
+  rememberSessionKey(id, key)
+  return session
+}
+
+export async function lockSession(id: string) {
+  return sessionReply(await fetch(`/api/sessions/${id}/lock`, { method: 'POST' }))
+}
+
+export function shareLink(id: string, locked: boolean) {
+  const key = locked ? sessionKey(id) : null
+  return `${window.location.origin}/?session=${id}${key ? `&key=${encodeURIComponent(key)}` : ''}`
 }
 
 export async function saveCameras(sessionId: string, cameras: CameraRecord[]) {
@@ -222,8 +273,8 @@ export async function deleteRemoteModel(id: string) {
 }
 
 // The server downloads the link, so model hosts without CORS headers still work.
-export async function fetchModelBytes(link: string) {
-  const response = await fetch(`/api/fetch-model?url=${encodeURIComponent(link)}`)
+export async function fetchModelBytes(sessionId: string, link: string) {
+  const response = await fetch(`/api/fetch-model?session=${sessionId}&url=${encodeURIComponent(link)}`)
   if (!response.ok) throw new Error(await errorText(response))
   return response.arrayBuffer()
 }

@@ -28,7 +28,11 @@ fun main() {
     val sessionId = UUID.randomUUID().toString()
     val deviceId = UUID.randomUUID().toString()
     check(client.syncClock().roundTripMs < 2000, "the clock syncs")
-    check(client.openSession(sessionId, Device(deviceId, "Kotlin test")).id == sessionId, "a session opens")
+    val opened = client.openSession(sessionId, Device(deviceId, "Kotlin test"))
+    check(opened.id == sessionId && opened.locked && client.sessionKey != null, "a new session opens privately")
+    val stranger = PbmpClient(baseUrl)
+    check(runCatching { stranger.getSession(sessionId) }.exceptionOrNull().let { it is PbmpException && it.status == 403 }, "a client without the key is refused")
+    check(stranger.unlock(sessionId, client.sessionKey!!)?.id == sessionId, "the shared key opens it")
     check(client.getSession(UUID.randomUUID().toString()) == null, "an unknown session is null")
 
     val bytes = ByteArray(2048) { (it % 251).toByte() }

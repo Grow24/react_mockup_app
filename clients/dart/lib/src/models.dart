@@ -241,6 +241,8 @@ class CustomModel {
 class SessionDetail {
   SessionDetail({
     required this.id,
+    required this.locked,
+    this.key,
     required this.createdAt,
     required this.updatedAt,
     required this.device,
@@ -250,6 +252,12 @@ class SessionDetail {
     required this.models,
   });
   final String id;
+
+  /// True once the session has a key; without it nothing in the session can be read or changed.
+  final bool locked;
+
+  /// Sent once, when the session is created or made private.
+  final String? key;
   final int createdAt;
   final int updatedAt;
   final Device device;
@@ -271,6 +279,8 @@ class SessionDetail {
 
   factory SessionDetail.fromJson(Map<String, Object?> json) => SessionDetail(
         id: json['id'] as String,
+        locked: json['locked'] == true,
+        key: json['key'] as String?,
         createdAt: _int(json['createdAt']),
         updatedAt: _int(json['updatedAt']),
         device: Device.fromJson(json['device'] as Map<String, Object?>),

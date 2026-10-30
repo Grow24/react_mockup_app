@@ -20,6 +20,12 @@ class PbmpClient(baseUrl: String, private val timeoutMs: Int = 20_000) {
     var clock: ClockSync? = null
         private set
 
+    /**
+     * The key of the session this client works in. [openSession] keeps a new session's key here,
+     * and [unlock] sets it from a shared link. It is sent as X-Session-Key on every request.
+     */
+    var sessionKey: String? = null
+
     fun resolve(path: String): String = URI(baseUrl + "/").resolve(path.removePrefix("/")).toString()
 
     private class Reply(val status: Int, val body: ByteArray)
@@ -31,6 +37,7 @@ class PbmpClient(baseUrl: String, private val timeoutMs: Int = 20_000) {
             connection.connectTimeout = timeoutMs
             connection.readTimeout = timeoutMs
             connection.setRequestProperty("Accept", "application/json")
+            sessionKey?.let { connection.setRequestProperty("X-Session-Key", it) }
             if (body != null) {
                 connection.doOutput = true
                 connection.setRequestProperty("Content-Type", contentType ?: "application/json")
@@ -78,7 +85,16 @@ class PbmpClient(baseUrl: String, private val timeoutMs: Int = 20_000) {
     fun serverNow(): Long = System.currentTimeMillis() + Math.round(clock?.offsetMs ?: 0.0)
 
     fun openSession(id: String, device: Device): SessionDetail =
-        SessionDetail.from(obj("POST", "/api/sessions", mapOf("id" to id, "device" to device.toJson())))
+        SessionDetail.from(obj("POST", "/api/sessions", mapOf("id" to id, "device" to device.toJson()))).also { session ->
+            session.key?.let { sessionKey = it }
+        }
+
+    /** Opens a shared session with the key from its link, for example `?session=...&key=...`. */
+    fun unlock(id: String, key: String): SessionDetail? = try {
+        SessionDetail.from(obj("POST", "/api/sessions/$id/unlock", mapOf("key" to key))).also { sessionKey = key }
+    } catch (error: PbmpException) {
+        if (error.status == 404) null else throw error
+    }
 
     /** Returns null when no session has this id. */
     fun getSession(id: String): SessionDetail? = try {

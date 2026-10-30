@@ -162,8 +162,11 @@ data class CustomModel(
     }
 }
 
+/** [locked] is true once the session has a key; [key] is sent once, when it is created or made private. */
 data class SessionDetail(
     val id: String,
+    val locked: Boolean,
+    val key: String?,
     val createdAt: Long,
     val updatedAt: Long,
     val device: Device,
@@ -179,6 +182,8 @@ data class SessionDetail(
     companion object {
         fun from(json: JsonObject) = SessionDetail(
             id = json.str("id"),
+            locked = json["locked"] == true,
+            key = json.optStr("key"),
             createdAt = json.long("createdAt"),
             updatedAt = json.long("updatedAt"),
             device = Device.from(json.obj("device")),

@@ -31,6 +31,12 @@ class PbmpClient {
   final http.Client _http;
   ClockSync? clock;
 
+  /// The key of the session this client works in. [openSession] keeps a new session's key here,
+  /// and [unlock] sets it from a shared link. It is sent as X-Session-Key on every request.
+  String? sessionKey;
+
+  Map<String, String> get _keyHeader => sessionKey == null ? const {} : {'X-Session-Key': sessionKey!};
+
   Uri _uri(String path, [Map<String, String>? query]) =>
       baseUrl.replace(path: '${baseUrl.path}$path', queryParameters: query);
 
@@ -48,7 +54,7 @@ class PbmpClient {
   }
 
   Future<Object?> _send(String method, String path, [Object? body]) {
-    final request = http.Request(method, _uri(path));
+    final request = http.Request(method, _uri(path))..headers.addAll(_keyHeader);
     if (body != null) {
       request.headers['Content-Type'] = 'application/json';
       request.body = jsonEncode(body);
@@ -82,8 +88,23 @@ class PbmpClient {
 
   int serverNow() => DateTime.now().millisecondsSinceEpoch + (clock?.offsetMs.round() ?? 0);
 
-  Future<SessionDetail> openSession(String id, Device device) async =>
-      SessionDetail.fromJson(await _send('POST', '/api/sessions', {'id': id, 'device': device.toJson()}) as Map<String, Object?>);
+  Future<SessionDetail> openSession(String id, Device device) async {
+    final session = SessionDetail.fromJson(await _send('POST', '/api/sessions', {'id': id, 'device': device.toJson()}) as Map<String, Object?>);
+    if (session.key != null) sessionKey = session.key;
+    return session;
+  }
+
+  /// Opens a shared session with the key from its link, for example `?session=...&key=...`.
+  Future<SessionDetail?> unlock(String id, String key) async {
+    try {
+      final session = SessionDetail.fromJson(await _send('POST', '/api/sessions/$id/unlock', {'key': key}) as Map<String, Object?>);
+      sessionKey = key;
+      return session;
+    } on PbmpException catch (error) {
+      if (error.status == 404) return null;
+      rethrow;
+    }
+  }
 
   /// Returns null when no session has this id.
   Future<SessionDetail?> getSession(String id) async {
@@ -110,6 +131,7 @@ class PbmpClient {
     int? startedAt,
   }) async {
     final request = http.MultipartRequest('POST', _uri('/api/sessions/$sessionId/assets'))
+      ..headers.addAll(_keyHeader)
       ..fields['meta'] = jsonEncode({
         'id': id,
         'kind': kind,
@@ -130,7 +152,7 @@ class PbmpClient {
   Future<void> deleteAsset(String id) => _send('DELETE', '/api/assets/$id');
 
   Future<Uint8List> download(String path) async {
-    final response = await _http.get(resolve(path));
+    final response = await _http.get(resolve(path), headers: _keyHeader);
     if (response.statusCode >= 400) throw PbmpException(response.statusCode, 'Download failed');
     return response.bodyBytes;
   }

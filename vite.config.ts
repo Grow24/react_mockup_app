@@ -18,11 +18,14 @@ function stopApi() {
   return api.stopping ?? Promise.resolve()
 }
 
+// PBMP_API_PORT lets the browser tests run their own API next to a dev server already on 8787.
+const apiPort = process.env.PBMP_API_PORT || '8787'
+
 async function startApi() {
   await stopApi()
   api.child = spawn(process.execPath, ['--experimental-strip-types', 'server/index.ts'], {
     stdio: 'inherit',
-    env: { ...process.env, PBMP_PORT: '8787' },
+    env: { ...process.env, PORT: apiPort, PBMP_PORT: apiPort },
   })
 }
 
@@ -56,7 +59,7 @@ export default defineConfig({
       'Cross-Origin-Embedder-Policy': 'credentialless',
     },
     proxy: {
-      '/api': 'http://127.0.0.1:8787',
+      '/api': `http://127.0.0.1:${apiPort}`,
     },
   },
 })

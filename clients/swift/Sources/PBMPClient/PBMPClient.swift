@@ -23,6 +23,9 @@ private struct LatestTake: Decodable { let take: Take? }
 public final class PBMPClient: @unchecked Sendable {
     public let baseURL: URL
     public private(set) var clock: ClockSync?
+    /// The key of the session this client works in. `openSession` keeps a new session's key here,
+    /// and `unlock` sets it from a shared link. It is sent as X-Session-Key on every request.
+    public var sessionKey: String?
     private let session: URLSession
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
@@ -41,6 +44,7 @@ public final class PBMPClient: @unchecked Sendable {
         var request = URLRequest(url: path.hasPrefix("http") ? URL(string: path)! : resolve(path))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let sessionKey { request.setValue(sessionKey, forHTTPHeaderField: "X-Session-Key") }
         if let body {
             request.httpBody = body
             request.setValue(contentType, forHTTPHeaderField: "Content-Type")
@@ -86,7 +90,21 @@ public final class PBMPClient: @unchecked Sendable {
 
     public func openSession(id: String, device: Device) async throws -> SessionDetail {
         struct Open: Encodable { let id: String; let device: Device }
-        return try await json(SessionDetail.self, "POST", "/api/sessions", body: Open(id: id, device: device))
+        let session = try await json(SessionDetail.self, "POST", "/api/sessions", body: Open(id: id, device: device))
+        if let key = session.key { sessionKey = key }
+        return session
+    }
+
+    /// Opens a shared session with the key from its link, for example `?session=...&key=...`.
+    public func unlock(id: String, key: String) async throws -> SessionDetail? {
+        struct Unlock: Encodable { let key: String }
+        do {
+            let session = try await json(SessionDetail.self, "POST", "/api/sessions/\(id)/unlock", body: Unlock(key: key))
+            sessionKey = key
+            return session
+        } catch let error as PBMPError where error.status == 404 {
+            return nil
+        }
     }
 
     /// Returns nil when no session has this id.

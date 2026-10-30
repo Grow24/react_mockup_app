@@ -127,6 +127,10 @@ public struct CustomModel: Codable, Equatable, Sendable {
 
 public struct SessionDetail: Decodable, Sendable {
     public var id: String
+    /// True once the session has a key; without it nothing in the session can be read or changed.
+    public var locked: Bool
+    /// Sent once, when the session is created or made private.
+    public var key: String?
     public var createdAt: Int
     public var updatedAt: Int
     public var device: Device
@@ -136,12 +140,14 @@ public struct SessionDetail: Decodable, Sendable {
     public var models: [CustomModel]
 
     enum CodingKeys: String, CodingKey {
-        case id, createdAt, updatedAt, device, assets, court, courts, ballTracks, models
+        case id, locked, key, createdAt, updatedAt, device, assets, court, courts, ballTracks, models
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
+        locked = try container.decodeIfPresent(Bool.self, forKey: .locked) ?? false
+        key = try container.decodeIfPresent(String.self, forKey: .key)
         createdAt = try container.decode(Int.self, forKey: .createdAt)
         updatedAt = try container.decode(Int.self, forKey: .updatedAt)
         device = try container.decode(Device.self, forKey: .device)

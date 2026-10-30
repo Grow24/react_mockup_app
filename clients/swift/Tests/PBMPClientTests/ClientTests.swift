@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import XCTest
 @testable import PBMPClient
 
@@ -30,6 +33,18 @@ final class ClientTests: XCTestCase {
         XCTAssertLessThan(clock.roundTripMs, 2000)
         let opened = try await client.openSession(id: sessionId, device: Device(id: deviceId, label: "Swift test"))
         XCTAssertEqual(opened.id, sessionId)
+        XCTAssertTrue(opened.locked)
+        let key = try XCTUnwrap(client.sessionKey)
+        // A separate cookie store, so the first client's key cookie does not travel along.
+        let stranger = PBMPClient(baseURL: baseURL, session: URLSession(configuration: .ephemeral))
+        do {
+            _ = try await stranger.session(id: sessionId)
+            XCTFail("a client without the key is refused")
+        } catch let error as PBMPError {
+            XCTAssertEqual(error.status, 403)
+        }
+        let shared = try await stranger.unlock(id: sessionId, key: key)
+        XCTAssertEqual(shared?.id, sessionId)
         let missing = try await client.session(id: uuid())
         XCTAssertNil(missing)
 
