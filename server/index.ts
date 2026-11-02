@@ -1,12 +1,13 @@
-import { createReadStream, existsSync, statSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { createReadStream, createWriteStream, existsSync, statSync } from 'node:fs'
+import { readFile, unlink } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
-import { Readable } from 'node:stream'
+import { Readable, Transform } from 'node:stream'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import { COURT_AREAS, landmarksProblem } from '../shared/court.ts'
 import { DATASET_README, dataYaml, TRAIN_SCRIPT, vocXml, yoloLabel } from './dataset.ts'
 import { tarGzip, untarGzip } from './tar.ts'
@@ -30,6 +31,7 @@ import {
   deleteWorkout,
   latestTake,
   mediaPath,
+  uploadPath,
   readModel,
   readTraining,
   readTrainingImage,
@@ -55,6 +57,7 @@ import {
 import {
   BALL_TRACK_LIMIT,
   COCO_KEYPOINTS,
+  COURTS_PER_CAMERA,
   MAX_PEOPLE,
   POSE_TRACK_LIMIT,
   MAX_MODEL_BYTES,
@@ -94,29 +97,44 @@ const port = listenPort()
 const distDir = path.resolve(process.cwd(), 'dist')
 const MAX_JSON = 1_000_000
 const MAX_MEDIA = 200 * 1024 * 1024
+// Long match videos run to gigabytes, so they are streamed to disk instead of read into memory.
+const MAX_STREAMED_MEDIA = 4 * 1024 * 1024 * 1024
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function cors(res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Session-Key')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Content-Encoding, X-Session-Key, X-Asset-Meta')
 }
+
+// Sessions with an hour of tracks run to tens of megabytes of JSON, which gzip cuts several times over.
+const GZIP_FROM = 64 * 1024
 
 function sendJson(res: ServerResponse, status: number, body: unknown) {
   cors(res)
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
-  res.end(JSON.stringify(body))
+  const text = JSON.stringify(body)
+  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', Vary: 'Accept-Encoding' }
+  if (text.length >= GZIP_FROM && /\bgzip\b/.test(String(res.req?.headers['accept-encoding'] ?? ''))) {
+    res.writeHead(status, { ...headers, 'Content-Encoding': 'gzip' })
+    res.end(gzipSync(text, { level: 4 }))
+    return
+  }
+  res.writeHead(status, headers)
+  res.end(text)
 }
 
 function isUuid(value: string) {
   return UUID.test(value)
 }
 
-const MAX_BALL_TRACK_JSON = 4_000_000
-const MAX_POSE_TRACK_JSON = 12_000_000
+const MAX_BALL_TRACK_JSON = 24_000_000
+const MAX_POSE_TRACK_JSON = 64_000_000
 
+// The limit is on the JSON itself, also when it arrives gzipped.
 async function readBody(req: IncomingMessage, limit = MAX_JSON) {
+  const encoding = String(req.headers['content-encoding'] ?? 'identity').toLowerCase()
+  if (encoding !== 'identity' && encoding !== 'gzip') return undefined
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
@@ -125,7 +143,15 @@ async function readBody(req: IncomingMessage, limit = MAX_JSON) {
     if (size > limit) return undefined
     chunks.push(buffer)
   }
-  const text = Buffer.concat(chunks).toString('utf8')
+  let raw = Buffer.concat(chunks)
+  if (encoding === 'gzip') {
+    try {
+      raw = gunzipSync(raw, { maxOutputLength: limit })
+    } catch {
+      return undefined
+    }
+  }
+  const text = raw.toString('utf8')
   if (!text) return {}
   return JSON.parse(text) as unknown
 }
@@ -257,6 +283,10 @@ function asCourt(value: unknown): CourtCalibration | undefined {
     if (typeof court.deviceId !== 'string' || !isUuid(court.deviceId)) return undefined
     next.deviceId = court.deviceId
   }
+  if (court.slot != null) {
+    if (!Number.isInteger(court.slot) || court.slot < 0 || court.slot >= COURTS_PER_CAMERA) return undefined
+    if (court.slot > 0) next.slot = court.slot
+  }
   return next
 }
 
@@ -302,6 +332,7 @@ function asBallTrack(value: unknown, assetId: string): BallTrack | undefined {
     createdAt: track.createdAt,
     points,
     ...(track.live === true ? { live: true } : {}),
+    ...(finiteIn(track.videoDuration, 0, 3600) ? { videoDuration: track.videoDuration } : {}),
   }
 }
 
@@ -358,6 +389,10 @@ function asPerson(value: unknown, width: number, height: number): PersonPose | u
       return undefined
     }
     next.racket = { x: racket.x, y: racket.y, width: racket.width, height: racket.height, score: racket.score, hand: racket.hand }
+  }
+  if (person.court != null) {
+    if (!Number.isInteger(person.court) || person.court < 0 || person.court >= COURTS_PER_CAMERA) return undefined
+    next.court = person.court
   }
   return next
 }
@@ -416,6 +451,7 @@ function asPoseTrack(value: unknown, assetId: string): PoseTrack | undefined {
     createdAt: track.createdAt,
     frames,
     ...(players ? { players } : {}),
+    ...(finiteIn(track.videoDuration, 0, 3600) ? { videoDuration: track.videoDuration } : {}),
   }
 }
 
@@ -766,6 +802,55 @@ function owningSession(parts: string[], url: URL) {
   if (parts[1] === 'custom-models') return readModel(id.toLowerCase())?.sessionId ?? null
   if (parts[1] === 'training-images') return readTrainingImage(id.toLowerCase())?.sessionId ?? null
   return null
+}
+
+type AssetMeta = Parameters<typeof saveAsset>[1]
+
+// The details sent with a photo or video, or what is wrong with them.
+function assetMeta(text: string): AssetMeta | string {
+  let meta: {
+    id?: unknown
+    kind?: unknown
+    mimeType?: unknown
+    createdAt?: unknown
+    cameraLabel?: unknown
+    width?: unknown
+    height?: unknown
+    snapshot?: unknown
+    deviceId?: unknown
+    takeId?: unknown
+    startedAt?: unknown
+  }
+  try {
+    meta = JSON.parse(text) as typeof meta
+  } catch {
+    return 'Meta JSON could not be read.'
+  }
+  if (!meta || typeof meta !== 'object') return 'Meta JSON could not be read.'
+  if (typeof meta.id !== 'string' || !isUuid(meta.id)) return 'Asset id is not valid.'
+  if (meta.kind !== 'photo' && meta.kind !== 'video') return 'Asset kind is not valid.'
+  if (typeof meta.mimeType !== 'string' || typeof meta.cameraLabel !== 'string') return 'Asset details are missing.'
+  if (typeof meta.createdAt !== 'number') return 'Asset time is missing.'
+  const snapshot = asSnapshot(meta.snapshot)
+  if (snapshot === undefined) return 'AI snapshot is not valid.'
+  for (const key of ['deviceId', 'takeId'] as const) {
+    const value = meta[key]
+    if (value != null && (typeof value !== 'string' || !isUuid(value))) return `${key} is not valid.`
+  }
+  if (meta.startedAt != null && !finiteIn(meta.startedAt, 0, Number.MAX_SAFE_INTEGER)) return 'startedAt is not valid.'
+  return {
+    id: meta.id,
+    kind: meta.kind,
+    mimeType: meta.mimeType.slice(0, 120),
+    createdAt: meta.createdAt,
+    cameraLabel: meta.cameraLabel.trim().slice(0, 160) || 'Camera',
+    width: typeof meta.width === 'number' ? meta.width : undefined,
+    height: typeof meta.height === 'number' ? meta.height : undefined,
+    snapshot,
+    deviceId: typeof meta.deviceId === 'string' ? meta.deviceId : undefined,
+    takeId: typeof meta.takeId === 'string' ? meta.takeId : undefined,
+    startedAt: typeof meta.startedAt === 'number' ? meta.startedAt : undefined,
+  }
 }
 
 async function formRequest(req: IncomingMessage) {
@@ -1342,11 +1427,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (req.method === 'DELETE') {
       const device = url.searchParams.get('device') ?? ''
-      if (device && !isUuid(device)) {
+      const slot = Number(url.searchParams.get('slot') ?? 0)
+      if ((device && !isUuid(device)) || !Number.isInteger(slot) || slot < 0 || slot >= COURTS_PER_CAMERA) {
         sendJson(res, 400, { error: 'Device id is not valid.' })
         return
       }
-      const session = saveCourt(parts[2]!, device, null)
+      const session = saveCourt(parts[2]!, device, null, slot)
       if (!session) {
         sendJson(res, 404, { error: 'Session was not found.' })
         return
@@ -1364,12 +1450,70 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       sendJson(res, 400, { error: 'Court calibration is not valid.' })
       return
     }
-    const session = saveCourt(parts[2]!, court.deviceId ?? '', court)
+    const session = saveCourt(parts[2]!, court.deviceId ?? '', court, court.slot ?? 0)
     if (!session) {
       sendJson(res, 404, { error: 'Session was not found.' })
       return
     }
     sendJson(res, 200, session)
+    return
+  }
+
+  if (
+    parts[0] === 'api' &&
+    parts[1] === 'sessions' &&
+    parts[3] === 'assets' &&
+    parts[4] === 'stream' &&
+    parts.length === 5 &&
+    req.method === 'PUT'
+  ) {
+    if (!isUuid(parts[2]!)) {
+      sendJson(res, 400, { error: 'Session id is not valid.' })
+      return
+    }
+    const header = req.headers['x-asset-meta']
+    let metaText = ''
+    try {
+      metaText = typeof header === 'string' ? decodeURIComponent(header) : ''
+    } catch {
+      metaText = ''
+    }
+    const meta = metaText ? assetMeta(metaText) : 'Asset details are missing.'
+    if (typeof meta === 'string') {
+      sendJson(res, 400, { error: meta })
+      return
+    }
+    if (Number(req.headers['content-length'] ?? 0) > MAX_STREAMED_MEDIA) {
+      sendJson(res, 413, { error: 'The file is larger than 4 GB.' })
+      return
+    }
+    const file = uploadPath(meta.id)
+    let size = 0
+    const counted = new Transform({
+      transform(chunk: Buffer, _encoding, done) {
+        size += chunk.length
+        if (size > MAX_STREAMED_MEDIA) done(new Error('The file is larger than 4 GB.'))
+        else done(null, chunk)
+      },
+    })
+    try {
+      await pipeline(req, counted, createWriteStream(file))
+    } catch {
+      await unlink(file).catch(() => undefined)
+      if (size > MAX_STREAMED_MEDIA) sendJson(res, 413, { error: 'The file is larger than 4 GB.' })
+      else if (!res.headersSent) sendJson(res, 400, { error: 'The upload was cut off.' })
+      return
+    }
+    const saved = await saveAsset(parts[2]!, meta, { file, size })
+    if (saved === 'conflict') {
+      sendJson(res, 409, { error: 'That file id already belongs to another session.' })
+      return
+    }
+    if (!saved) {
+      sendJson(res, 404, { error: 'Session was not found.' })
+      return
+    }
+    sendJson(res, 200, saved)
     return
   }
 
@@ -1395,74 +1539,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       sendJson(res, 413, { error: 'The file is larger than 200 MB.' })
       return
     }
-    let meta: {
-      id?: unknown
-      kind?: unknown
-      mimeType?: unknown
-      createdAt?: unknown
-      cameraLabel?: unknown
-      width?: unknown
-      height?: unknown
-      snapshot?: unknown
-      deviceId?: unknown
-      takeId?: unknown
-      startedAt?: unknown
-    }
-    try {
-      meta = JSON.parse(metaText) as typeof meta
-    } catch {
-      sendJson(res, 400, { error: 'Meta JSON could not be read.' })
+    const meta = assetMeta(metaText)
+    if (typeof meta === 'string') {
+      sendJson(res, 400, { error: meta })
       return
     }
-    if (typeof meta.id !== 'string' || !isUuid(meta.id)) {
-      sendJson(res, 400, { error: 'Asset id is not valid.' })
-      return
-    }
-    if (meta.kind !== 'photo' && meta.kind !== 'video') {
-      sendJson(res, 400, { error: 'Asset kind is not valid.' })
-      return
-    }
-    if (typeof meta.mimeType !== 'string' || typeof meta.cameraLabel !== 'string') {
-      sendJson(res, 400, { error: 'Asset details are missing.' })
-      return
-    }
-    if (typeof meta.createdAt !== 'number') {
-      sendJson(res, 400, { error: 'Asset time is missing.' })
-      return
-    }
-    const snapshot = asSnapshot(meta.snapshot)
-    if (snapshot === undefined) {
-      sendJson(res, 400, { error: 'AI snapshot is not valid.' })
-      return
-    }
-    for (const key of ['deviceId', 'takeId'] as const) {
-      const value = meta[key]
-      if (value != null && (typeof value !== 'string' || !isUuid(value))) {
-        sendJson(res, 400, { error: `${key} is not valid.` })
-        return
-      }
-    }
-    if (meta.startedAt != null && !finiteIn(meta.startedAt, 0, Number.MAX_SAFE_INTEGER)) {
-      sendJson(res, 400, { error: 'startedAt is not valid.' })
-      return
-    }
-    const saved = await saveAsset(
-      parts[2]!,
-      {
-        id: meta.id,
-        kind: meta.kind,
-        mimeType: meta.mimeType.slice(0, 120),
-        createdAt: meta.createdAt,
-        cameraLabel: meta.cameraLabel.trim().slice(0, 160) || 'Camera',
-        width: typeof meta.width === 'number' ? meta.width : undefined,
-        height: typeof meta.height === 'number' ? meta.height : undefined,
-        snapshot,
-        deviceId: typeof meta.deviceId === 'string' ? meta.deviceId : undefined,
-        takeId: typeof meta.takeId === 'string' ? meta.takeId : undefined,
-        startedAt: typeof meta.startedAt === 'number' ? meta.startedAt : undefined,
-      },
-      Buffer.from(await file.arrayBuffer()),
-    )
+    const saved = await saveAsset(parts[2]!, meta, Buffer.from(await file.arrayBuffer()))
     if (saved === 'conflict') {
       sendJson(res, 409, { error: 'That file id already belongs to another session.' })
       return

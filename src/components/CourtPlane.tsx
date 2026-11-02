@@ -91,11 +91,14 @@ export function CourtPlane({
   sourceHeight,
   snapshot,
   saved,
+  slot = 0,
   onSave,
   onClear,
 }: {
   assetId: string
   deviceId?: string
+  // Which of this camera's courts is being marked: 0 for the first, 1 for a second court in view.
+  slot?: number
   imageUrl: string
   alt: string
   sourceWidth: number
@@ -190,6 +193,7 @@ export function CourtPlane({
     if (done.landmarks.join() !== defaultLandmarks(preset).join()) court.landmarks = done.landmarks
     if (done.estimated) court.estimatedPoints = done.estimated
     if (deviceId) court.deviceId = deviceId
+    if (slot > 0) court.slot = slot
     onSave(court)
   }
 
@@ -219,9 +223,13 @@ export function CourtPlane({
     setFinding(true)
     setFound(null)
     try {
-      const detected = await detectCourt(image, sourceWidth, sourceHeight)
+      const detected = await detectCourt(image, sourceWidth, sourceHeight, preset)
       if (!detected) {
-        setFound('No tennis court was found in this photo. Click the court points instead.')
+        setFound(
+          preset === 'cricket-pitch'
+            ? 'No pitch creases were found in this photo. Click the crease points instead.'
+            : 'No tennis court was found in this photo. Click the court points instead.',
+        )
         return
       }
       setLandmarks(detected.landmarks)
@@ -232,10 +240,13 @@ export function CourtPlane({
         if (courtName.trim()) court.name = courtName.trim()
         if (done.landmarks.join() !== defaultLandmarks(preset).join()) court.landmarks = done.landmarks
         if (deviceId) court.deviceId = deviceId
+        if (slot > 0) court.slot = slot
         onSave(court)
       }
       setFound(
-        `Court found: ${Math.round(detected.hitRate * 100)}% of its lines sit on painted lines. Check that the drawn lines match the court; Clear court to mark it by hand.`,
+        preset === 'cricket-pitch'
+          ? `Pitch found: ${Math.round(detected.hitRate * 100)}% of its creases sit on painted lines. Check that the drawn creases match; Clear court to mark it by hand.`
+          : `Court found: ${Math.round(detected.hitRate * 100)}% of its lines sit on painted lines. Check that the drawn lines match the court; Clear court to mark it by hand.`,
       )
     } catch (caught) {
       console.error(caught)
@@ -331,7 +342,7 @@ export function CourtPlane({
         <span>Court name</span>
         <input
           value={courtName}
-          placeholder="Court 1"
+          placeholder={`Court ${slot + 1}`}
           maxLength={40}
           onChange={(event) => setCourtName(event.target.value)}
           onBlur={() => publish(points)}
@@ -400,11 +411,15 @@ export function CourtPlane({
         <button type="button" className="secondary" onClick={clearCourt}>
           Clear court
         </button>
-        {preset === 'tennis-doubles' ? (
-          <button type="button" className="primary" disabled={!image || finding} onClick={() => void findCourt()}>
-            {finding ? 'Looking for the court…' : 'Find the court automatically'}
-          </button>
-        ) : null}
+        <button type="button" className="primary" disabled={!image || finding} onClick={() => void findCourt()}>
+          {finding
+            ? preset === 'cricket-pitch'
+              ? 'Looking for the creases…'
+              : 'Looking for the court…'
+            : preset === 'cricket-pitch'
+              ? 'Find the creases automatically'
+              : 'Find the court automatically'}
+        </button>
       </div>
       {error ? (
         <p className="warn" role="alert">

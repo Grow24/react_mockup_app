@@ -1,16 +1,18 @@
 import { COURT_PRESETS, type CourtCalibration, type PersonPose, type PoseTrack } from '../../shared/contracts.ts'
 import { positionAt, velocityAt, type CourtCamera, type Flight, type FlightFit, type Vec3 } from './flight.ts'
-import { feetOnCourt, frameAt, JOINTS, keypoint, playerPaths } from './players.ts'
+import { feetOnCourt, frameAt, JOINTS, keypoint, onCourt, personName, playerPaths } from './players.ts'
 
 // Shots closer together than this belong to one rally.
-const RALLY_GAP = 4
+export const RALLY_GAP = 4
 // A quiet stretch at least this long is a gap between points; this long or more, a break.
-const GAP_SECONDS = 6
-const BREAK_SECONDS = 60
+export const GAP_SECONDS = 6
+export const BREAK_SECONDS = 60
 // Nobody further than this from the ball when it was struck is taken for the hitter.
 const REACH = 3
 // Players walking slower than this on average are resting.
-const RESTING_SPEED = 0.6
+export const RESTING_SPEED = 0.6
+// An overhead stroke is a serve only after the ball has been quiet this long.
+export const SERVE_PAUSE = 2.5
 
 export type ShotKind = 'serve' | 'overhead smash' | 'forehand volley' | 'backhand volley' | 'forehand drive' | 'backhand drive' | 'shot'
 
@@ -30,6 +32,16 @@ export type MatchSegment =
   | { kind: 'gap' | 'break'; from: number; to: number; resting: boolean }
 
 export type MatchSummary = { shots: Shot[]; segments: MatchSegment[]; hands: Record<string, 'left' | 'right'> }
+
+export function hitterName(player: string | null) {
+  if (!player) return 'Someone'
+  return /^[A-H]$/.test(player) ? `Player ${player}` : personName({ player })
+}
+
+export function shotText(shot: Shot) {
+  const kind = shot.twoHanded ? shot.kind.replace('backhand', 'two-handed backhand') : shot.kind
+  return `${hitterName(shot.player)} ${kind}`
+}
 
 // A point in the image placed on an upright plane through the feet, facing the camera.
 function liftPoint(camera: CourtCamera, feet: { x: number; y: number }, image: { x: number; y: number }): Vec3 | null {
@@ -121,7 +133,7 @@ function classify(
   // (a volley). Without it, being at the net is the best guess.
   const volley = hit.incoming ? hit.incoming.startBounce == null : Math.abs(feet.y - lengthMeters / 2) <= 4.5
   let kind: ShotKind
-  if (overhead && sinceLastShot > 2.5 && nearBaseline) kind = 'serve'
+  if (overhead && sinceLastShot > SERVE_PAUSE && nearBaseline) kind = 'serve'
   else if (overhead) kind = 'overhead smash'
   else if (forehand == null) kind = 'shot'
   else if (volley) kind = forehand ? 'forehand volley' : 'backhand volley'
@@ -163,7 +175,7 @@ export function readMatch(fit: FlightFit, track: PoseTrack | null, court: CourtC
       let best: { person: PersonPose; feet: { x: number; y: number }; distance: number } | null = null
       for (const person of frame.people) {
         const key = keyOf(person)
-        const feet = feetOnCourt(person, court, track.sourceWidth, track.sourceHeight)
+        const feet = onCourt(person, court) ? feetOnCourt(person, court, track.sourceWidth, track.sourceHeight) : null
         if (!key || !feet || feet.y < lengthMeters / 2 !== p.y < lengthMeters / 2) continue
         const distance = Math.hypot(feet.x - p.x, feet.y - p.y)
         if (distance <= REACH && (!best || distance < best.distance)) best = { person, feet, distance }

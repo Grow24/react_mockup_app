@@ -80,7 +80,8 @@ class CourtPoint {
   Map<String, Object?> toJson() => {'x': x, 'y': y};
 }
 
-/// Four corners in the photo, in order: near left, near right, far right, far left.
+/// Four points in the photo. Without [landmarks] they are the outer corners, in order: near left,
+/// near right, far right, far left.
 class CourtCalibration {
   CourtCalibration({
     required this.preset,
@@ -89,6 +90,11 @@ class CourtCalibration {
     required this.sourceHeight,
     required this.imagePoints,
     this.deviceId,
+    this.landmarks,
+    this.callArea,
+    this.name,
+    this.estimatedPoints,
+    this.slot,
   });
   final String preset;
   final String assetId;
@@ -97,6 +103,21 @@ class CourtCalibration {
   final List<CourtPoint> imagePoints;
   final String? deviceId;
 
+  /// Ids from the court's landmarks, one per image point.
+  final List<String>? landmarks;
+
+  /// The area a bounce is called against, such as `singles` or `serve-far-deuce`.
+  final String? callArea;
+
+  /// What the court is called at the venue, like "Court 1".
+  final String? name;
+  final int? estimatedPoints;
+
+  /// A camera can watch two courts side by side: 0 (or null) is the first, 1 the second.
+  final int? slot;
+
+  String get label => name ?? 'Court ${(slot ?? 0) + 1}';
+
   factory CourtCalibration.fromJson(Map<String, Object?> json) => CourtCalibration(
         preset: json['preset'] as String,
         assetId: json['assetId'] as String,
@@ -104,6 +125,11 @@ class CourtCalibration {
         sourceHeight: _double(json['sourceHeight']),
         imagePoints: _list(json['imagePoints'], CourtPoint.fromJson),
         deviceId: json['deviceId'] as String?,
+        landmarks: (json['landmarks'] as List?)?.cast<String>(),
+        callArea: json['callArea'] as String?,
+        name: json['name'] as String?,
+        estimatedPoints: _optInt(json['estimatedPoints']),
+        slot: _optInt(json['slot']),
       );
   Map<String, Object?> toJson() => _compact({
         'preset': preset,
@@ -112,6 +138,11 @@ class CourtCalibration {
         'sourceHeight': sourceHeight,
         'imagePoints': imagePoints.map((point) => point.toJson()).toList(),
         'deviceId': deviceId,
+        'landmarks': landmarks,
+        'callArea': callArea,
+        'name': name,
+        'estimatedPoints': estimatedPoints,
+        if (slot != null && slot! > 0) 'slot': slot,
       });
 }
 
@@ -147,6 +178,7 @@ class BallTrack {
     required this.createdAt,
     required this.points,
     this.live = false,
+    this.videoDuration,
   });
   final String assetId;
   final String modelId;
@@ -158,6 +190,11 @@ class BallTrack {
   final List<BallPoint> points;
   final bool live;
 
+  /// The length being read, when the track so far covers only the first part of it.
+  final double? videoDuration;
+
+  bool get unfinished => videoDuration != null && duration < videoDuration! - 1.5 / sampleFps;
+
   factory BallTrack.fromJson(Map<String, Object?> json) => BallTrack(
         assetId: json['assetId'] as String,
         modelId: json['modelId'] as String,
@@ -168,6 +205,7 @@ class BallTrack {
         createdAt: _int(json['createdAt']),
         points: _list(json['points'], BallPoint.fromJson),
         live: json['live'] == true,
+        videoDuration: _optDouble(json['videoDuration']),
       );
   Map<String, Object?> toJson() => {
         'assetId': assetId,
@@ -179,7 +217,103 @@ class BallTrack {
         'createdAt': createdAt,
         'points': points.map((point) => point.toJson()).toList(),
         if (live) 'live': true,
+        if (videoDuration != null) 'videoDuration': videoDuration,
       };
+}
+
+/// What a lettered player looks like: their shirt and shorts colors.
+class PlayerProfile {
+  PlayerProfile({required this.id, required this.torso, required this.legs, required this.frames});
+  final String id;
+  final List<int> torso;
+  final List<int> legs;
+  final int frames;
+
+  factory PlayerProfile.fromJson(Map<String, Object?> json) => PlayerProfile(
+        id: json['id'] as String,
+        torso: ((json['torso'] as List?) ?? const [0, 0, 0]).map((value) => (value as num).toInt()).toList(),
+        legs: ((json['legs'] as List?) ?? const [0, 0, 0]).map((value) => (value as num).toInt()).toList(),
+        frames: _int(json['frames']),
+      );
+}
+
+/// One person in a frame: their box, 17 COCO joints as x, y, score triples, and who they are.
+class PersonPose {
+  PersonPose({required this.box, required this.score, required this.keypoints, this.player, this.id, this.court});
+  final ({double x, double y, double width, double height}) box;
+  final double score;
+  final List<double> keypoints;
+
+  /// The side of the net: `near`, `far`, `near-2`, or `far-2`.
+  final String? player;
+
+  /// The player's letter, A to H, kept through the video.
+  final String? id;
+
+  /// Which of the camera's courts they stand on, when it watches two.
+  final int? court;
+
+  factory PersonPose.fromJson(Map<String, Object?> json) {
+    final box = json['box'] as Map<String, Object?>;
+    return PersonPose(
+      box: (x: _double(box['x']), y: _double(box['y']), width: _double(box['width']), height: _double(box['height'])),
+      score: _double(json['score']),
+      keypoints: ((json['keypoints'] as List?) ?? const []).map((value) => (value as num).toDouble()).toList(),
+      player: json['player'] as String?,
+      id: json['id'] as String?,
+      court: _optInt(json['court']),
+    );
+  }
+
+  /// "Player A (near)", "Player C (Court 2, far)", or the side alone without a letter.
+  String get name {
+    final side = player?.startsWith('near') == true ? 'near' : player?.startsWith('far') == true ? 'far' : null;
+    final where = [if (court != null) 'Court ${court! + 1}', if (side != null) side].join(', ');
+    if (id != null) return where.isEmpty ? 'Player $id' : 'Player $id ($where)';
+    return where.isEmpty ? 'Person' : 'Player ($where)';
+  }
+}
+
+class PoseFrame {
+  PoseFrame(this.t, this.people);
+  final double t;
+  final List<PersonPose> people;
+  factory PoseFrame.fromJson(Map<String, Object?> json) => PoseFrame(_double(json['t']), _list(json['people'], PersonPose.fromJson));
+}
+
+/// The players' joints through a video, from YOLOv8-pose.
+class PoseTrack {
+  PoseTrack({
+    required this.assetId,
+    required this.sourceWidth,
+    required this.sourceHeight,
+    required this.sampleFps,
+    required this.duration,
+    required this.frames,
+    required this.players,
+    this.videoDuration,
+  });
+  final String assetId;
+  final double sourceWidth;
+  final double sourceHeight;
+  final double sampleFps;
+  final double duration;
+  final List<PoseFrame> frames;
+  final List<PlayerProfile> players;
+  final double? videoDuration;
+
+  bool get unfinished => videoDuration != null && duration < videoDuration! - 1.5 / sampleFps;
+
+  factory PoseTrack.fromJson(Map<String, Object?> json) => PoseTrack(
+        assetId: json['assetId'] as String,
+        sourceWidth: _double(json['sourceWidth']),
+        sourceHeight: _double(json['sourceHeight']),
+        sampleFps: _double(json['sampleFps']),
+        duration: _double(json['duration']),
+        frames: _list(json['frames'], PoseFrame.fromJson),
+        players: _list(json['players'], PlayerProfile.fromJson),
+        videoDuration: _optDouble(json['videoDuration']),
+      );
 }
 
 class Take {
@@ -249,6 +383,7 @@ class SessionDetail {
     required this.assets,
     required this.courts,
     required this.ballTracks,
+    this.poseTracks = const [],
     required this.models,
   });
   final String id;
@@ -264,15 +399,32 @@ class SessionDetail {
   final List<MediaAsset> assets;
   final List<CourtCalibration> courts;
   final List<BallTrack> ballTracks;
+  final List<PoseTrack> poseTracks;
   final List<CustomModel> models;
 
-  /// The court marked for one phone, or the shared one marked before courts were per phone.
+  /// The first court marked for one phone, or the shared one marked before courts were per phone.
   CourtCalibration? courtFor(String? deviceId) {
-    for (final court in courts) {
-      if ((court.deviceId ?? '') == (deviceId ?? '')) return court;
+    final all = courtsFor(deviceId);
+    return all.isEmpty ? null : all.first;
+  }
+
+  /// Every court one phone watches, the first marked first: two when it sees two courts side by side.
+  List<CourtCalibration> courtsFor(String? deviceId) {
+    final own = courts.where((court) => (court.deviceId ?? '') == (deviceId ?? '')).toList();
+    final chosen = own.isNotEmpty ? own : courts.where((court) => court.deviceId == null).toList();
+    return chosen..sort((a, b) => (a.slot ?? 0).compareTo(b.slot ?? 0));
+  }
+
+  BallTrack? ballTrackFor(String assetId) {
+    for (final track in ballTracks) {
+      if (track.assetId == assetId) return track;
     }
-    for (final court in courts) {
-      if (court.deviceId == null) return court;
+    return null;
+  }
+
+  PoseTrack? poseTrackFor(String assetId) {
+    for (final track in poseTracks) {
+      if (track.assetId == assetId) return track;
     }
     return null;
   }
@@ -289,6 +441,7 @@ class SessionDetail {
             ? _list(json['courts'], CourtCalibration.fromJson)
             : [if (json['court'] != null) CourtCalibration.fromJson(json['court'] as Map<String, Object?>)],
         ballTracks: _list(json['ballTracks'], BallTrack.fromJson),
+        poseTracks: _list(json['poseTracks'], PoseTrack.fromJson),
         models: _list(json['models'], CustomModel.fromJson),
       );
 }

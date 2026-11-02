@@ -1,5 +1,5 @@
-import type { CourtPoint } from '../../shared/contracts.ts'
-import { fitCourtModel, landmarksInView, mergeSegments, type Segment } from './courtFit'
+import type { CourtPoint, CourtPreset } from '../../shared/contracts.ts'
+import { COURT_MODELS, fitCourtModel, landmarksInView, mergeSegments, type Segment } from './courtFit'
 import { loadOpenCv } from './opencv'
 
 const WORK_SIDE = 960
@@ -29,9 +29,15 @@ type Cv = {
 
 export type DetectedCourt = { landmarks: string[]; imagePoints: CourtPoint[]; hitRate: number }
 
-// Finds a tennis court's painted lines in a photo and returns four court points, in the photo's
-// pixels, as if they had been clicked. Null when no court fits the lines well.
-export async function detectCourt(image: CanvasImageSource, width: number, height: number): Promise<DetectedCourt | null> {
+// Finds a tennis court's painted lines, or a cricket pitch's creases, in a photo and returns four
+// court points, in the photo's pixels, as if they had been clicked. Null when nothing fits the lines well.
+export async function detectCourt(
+  image: CanvasImageSource,
+  width: number,
+  height: number,
+  preset: CourtPreset = 'tennis-doubles',
+): Promise<DetectedCourt | null> {
+  const model = COURT_MODELS[preset]
   const { cv: loaded } = await loadOpenCv()
   const cv = loaded as unknown as Cv
   const scale = Math.min(1, WORK_SIDE / Math.max(width, height))
@@ -76,18 +82,18 @@ export async function detectCourt(image: CanvasImageSource, width: number, heigh
     const mask = keep(cv.matFromArray(h, w, cv.CV_8UC1, white))
     const segments = keep(new cv.Mat())
     const diagonal = Math.hypot(w, h)
-    cv.HoughLinesP(mask, segments, 1, Math.PI / 360, 30, diagonal * 0.04, diagonal * 0.01)
+    cv.HoughLinesP(mask, segments, 1, Math.PI / 360, 30, diagonal * model.minLine * 0.8, diagonal * 0.01)
     const list: Segment[] = []
     for (let index = 0; index < segments.rows; index += 1) {
       const at = index * 4
       list.push([segments.data32S[at]!, segments.data32S[at + 1]!, segments.data32S[at + 2]!, segments.data32S[at + 3]!])
     }
-    const lines = mergeSegments(list, diagonal)
+    const lines = mergeSegments(list, diagonal, model)
     const grown = keep(new cv.Mat())
     cv.dilate(mask, grown, keep(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5))))
-    const found = fitCourtModel(lines, { data: grown.data, width: w, height: h }, { data: white, width: w, height: h })
+    const found = fitCourtModel(lines, { data: grown.data, width: w, height: h }, { data: white, width: w, height: h }, model)
     if (!found) return null
-    const chosen = landmarksInView(found.h, w, h)
+    const chosen = landmarksInView(found.h, w, h, preset)
     if (!chosen) return null
     return {
       landmarks: chosen.landmarks,

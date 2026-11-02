@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { courtLines, landmarkById } from '../../shared/court.ts'
-import { fitCourtModel, landmarksInView, mergeSegments, type Segment } from '../../src/vision/courtFit.ts'
+import type { CourtPreset } from '../../shared/contracts.ts'
+import { COURT_MODELS, fitCourtModel, landmarksInView, mergeSegments, type Segment } from '../../src/vision/courtFit.ts'
 import { projectPoint } from '../../src/vision/flight.ts'
-import { behind, corner } from '../helpers/scene.ts'
+import { behind, corner, lookAtCamera } from '../helpers/scene.ts'
 
 // The court's painted lines drawn into a mask from a known camera, plus Hough-like segments of them.
-function scene(camera: typeof behind, width: number, height: number) {
+function scene(camera: typeof behind, width: number, height: number, preset: CourtPreset = 'tennis-doubles') {
   const data = new Uint8Array(width * height)
   const segments: Segment[] = []
-  for (const line of courtLines('tennis-doubles')) {
+  for (const line of courtLines(preset)) {
     if (line.dashed) continue
     const steps = 400
     for (let k = 0; k <= steps; k += 1) {
@@ -57,4 +58,22 @@ describe('court detection', () => {
       })
     })
   }
+
+  it('finds the creases of a cricket pitch from behind the bowler', () => {
+    // A broadcast camera high behind the bowler's end, zoomed on the pitch.
+    const camera = lookAtCamera({ x: 1.7, y: -24, z: 8 }, { x: 1.525, y: 9, z: 0 }, 1500, 1280, 720)
+    const { sharp, grown, segments } = scene(camera, 1280, 720, 'cricket-pitch')
+    const model = COURT_MODELS['cricket-pitch']
+    const lines = mergeSegments(segments, Math.hypot(1280, 720), model)
+    const found = fitCourtModel(lines, grown, sharp, model)!
+    assert.ok(found, 'a pitch was found')
+    assert.ok(found.hitRate > 0.8, `hit rate ${found.hitRate}`)
+    const chosen = landmarksInView(found.h, 1280, 720, 'cricket-pitch')!
+    chosen.landmarks.forEach((id, index) => {
+      const world = landmarkById('cricket-pitch', id)!
+      const truth = projectPoint(camera, { x: world.x, y: world.y, z: 0 })!
+      const error = Math.hypot(truth.x - chosen.imagePoints[index]!.x, truth.y - chosen.imagePoints[index]!.y)
+      assert.ok(error < 2, `${id} is ${error.toFixed(2)} px off`)
+    })
+  })
 })

@@ -40,7 +40,87 @@ test('tracks the ball in a recorded video and places the bounce in 3D', async ({
   const match = page.locator('[aria-label="Match"]')
   await expect(match.getByRole('button', { name: 'Rally 1' })).toBeVisible({ timeout: 30_000 })
   await expect(match.locator('.match-shot').first()).toBeVisible()
+  // The clip's one ball leaves the near ad court and lands in the far deuce box. Caught from its start
+  // near the baseline it is a serve, and a fault; caught mid-flight it is a shot that was not returned.
+  await expect(match.getByLabel('Score')).toContainText(/Fault: Someone's serve out of the ad box|Point 1 to Near team: Someone's shot not returned/)
   await match.screenshot({ path: 'test-results/match.png' })
+})
+
+test('stops ball tracking part way, keeps what was read, and carries on from there', async ({ page }) => {
+  const session = await newSession(page)
+  await page.goto(`/?session=${session.id}`)
+  await enableCamera(page)
+  await page.getByRole('button', { name: 'Start recording' }).click()
+  await page.waitForTimeout(3300)
+  await page.getByRole('button', { name: 'Stop recording' }).click()
+  await expect(page.getByText(/Video saved/)).toBeVisible()
+  await page.getByRole('link', { name: /Results/ }).click()
+  await page.locator('.asset-list button', { hasText: 'Video' }).first().click()
+  const panel = page.locator('[aria-label="Ball tracking"]')
+  await panel.getByRole('button', { name: 'Track the ball' }).click()
+  await expect(panel.getByText(/Reading frame (1[0-9]|[2-9][0-9]) of/)).toBeVisible({ timeout: 150_000 })
+  await panel.getByRole('button', { name: 'Stop' }).click()
+  await expect(panel.getByText(/^Stopped at 00:0\d of 00:0\d\. What was read is saved/)).toBeVisible()
+  const carryOn = panel.getByRole('button', { name: /^Continue from 00:0\d$/ })
+  await expect(carryOn).toBeVisible()
+  await expect
+    .poll(async () => ((await (await page.request.get(`/api/sessions/${session.id}`)).json()) as { ballTracks: { videoDuration?: number }[] }).ballTracks[0]?.videoDuration ?? 0)
+    .toBeGreaterThan(3)
+  await carryOn.click()
+  await expect(panel.getByRole('button', { name: 'Track again' })).toBeVisible({ timeout: 150_000 })
+  await expect(panel.getByRole('button', { name: /^Continue from/ })).toHaveCount(0)
+  await expect(panel.getByText(/Ball in \d+ of \d+ frames/)).toBeVisible()
+})
+
+test('marks a second court in the same camera view and reads either one', async ({ page }) => {
+  const session = await newSession(page)
+  await page.goto(`/?session=${session.id}`)
+  await enableCamera(page)
+  await page.getByRole('button', { name: 'Start recording' }).click()
+  await page.waitForTimeout(1500)
+  await page.getByRole('button', { name: 'Stop recording' }).click()
+  await expect(page.getByText(/Video saved/)).toBeVisible()
+  await page.waitForTimeout(600)
+  await page.getByRole('button', { name: 'Capture photo' }).click()
+  await expect(page.getByText(/Photo saved/)).toBeVisible()
+  await page.getByRole('link', { name: /Results/ }).click()
+  await page.locator('.asset-list button', { hasText: 'Photo' }).first().click()
+  await markCourt(page, COURT_CORNERS)
+  const choice = page.getByLabel('Court to mark')
+  await expect(choice).toBeVisible()
+  await choice.selectOption({ label: 'Court 2, a second court in this view' })
+  // A smaller court in the middle of the photo stands in for the court beside it.
+  const middle = { x: COURT_CORNERS.reduce((sum, p) => sum + p.x, 0) / 4, y: COURT_CORNERS.reduce((sum, p) => sum + p.y, 0) / 4 }
+  await markCourt(page, COURT_CORNERS.map((p) => ({ x: middle.x + (p.x - middle.x) * 0.5, y: middle.y + (p.y - middle.y) * 0.5 })))
+  await expect
+    .poll(async () => ((await (await page.request.get(`/api/sessions/${session.id}`)).json()) as { courts: { slot?: number }[] }).courts.map((court) => court.slot ?? 0).sort())
+    .toEqual([0, 1])
+  await page.locator('.asset-list button', { hasText: 'Video' }).first().click()
+  const read = page.getByLabel('Court to read')
+  await expect(read.locator('option')).toHaveText(['Court 1', 'Court 2'])
+  await read.selectOption({ label: 'Court 2' })
+  await expect(page.locator('[aria-label="Players"]')).toBeVisible()
+})
+
+test('adds a match video from another camera as a file', async ({ page }) => {
+  const session = await newSession(page)
+  await page.goto(`/?session=${session.id}`)
+  await enableCamera(page)
+  await page.getByRole('button', { name: 'Start recording' }).click()
+  await page.waitForTimeout(1500)
+  await page.getByRole('button', { name: 'Stop recording' }).click()
+  await expect(page.getByText(/Video saved/)).toBeVisible()
+  const sessionUrl = `/api/sessions/${session.id}`
+  await expect.poll(async () => ((await (await page.request.get(sessionUrl)).json()) as { assets: unknown[] }).assets.length).toBe(1)
+  const [recorded] = ((await (await page.request.get(sessionUrl)).json()) as { assets: { id: string }[] }).assets
+  const bytes = await (await page.request.get(`/api/assets/${recorded!.id}/file`)).body()
+  await page.getByRole('link', { name: /Results/ }).click()
+  await page.locator('.file-pick input[type="file"]').setInputFiles({ name: 'match.webm', mimeType: 'video/webm', buffer: bytes })
+  await expect(page.getByText('Added match.webm.')).toBeVisible()
+  await expect(page.locator('.asset-list button', { hasText: 'File: match.webm' })).toBeVisible()
+  await expect
+    .poll(async () => ((await (await page.request.get(sessionUrl)).json()) as { assets: { cameraLabel: string }[] }).assets.map((asset) => asset.cameraLabel))
+    .toContain('File: match.webm')
 })
 
 test('calls a live bounce in on the court marked for this phone', async ({ page }) => {
@@ -59,6 +139,24 @@ test('calls a live bounce in on the court marked for this phone', async ({ page 
   test.skip(checks < 6, `Only ${checks} checks/s on this machine, too slow to see a live bounce`)
   await expect(live.locator('.line-call'), `${checks} checks/s`).toHaveText('IN', { timeout: 60_000 })
   await expect(live.locator('.line-call-box .muted')).toContainText('m from the left line')
+})
+
+test('follows the players live with YOLOv8n-pose on the court marked for this phone', async ({ page }) => {
+  const session = await newSession(page)
+  await page.goto(`/?session=${session.id}`)
+  await courtFromCamera(page)
+  await page.getByRole('link', { name: 'Camera', exact: true }).click()
+  await enableCamera(page)
+  const players = page.locator('[aria-label="Live players"]')
+  await expect(players).toContainText('Turn AI on below')
+  await page.getByRole('combobox', { name: 'Pose model' }).selectOption('people')
+  await page.getByRole('button', { name: 'Turn AI on' }).click()
+  await expect(players.getByRole('list', { name: 'Players now' })).toContainText('No player in view.', { timeout: 120_000 })
+  await expect(players.locator('canvas.court-flat')).toBeVisible()
+  await expect(players).toContainText('Start live ball as well')
+  await page.locator('.card', { has: page.getByRole('heading', { name: 'Live ball' }) }).getByRole('button', { name: 'Start live ball' }).click()
+  await expect(players).toContainText('No shot yet.', { timeout: 90_000 })
+  await players.screenshot({ path: 'test-results/live-players.png' })
 })
 
 test('builds a labeled training set and exports it for YOLO', async ({ page }) => {

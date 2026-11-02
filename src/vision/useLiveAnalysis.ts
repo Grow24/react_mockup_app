@@ -1,18 +1,25 @@
 import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 import type { PersonPose } from '../../shared/contracts.ts'
-import { courtFor, deviceId } from '../session/api'
+import { courtsFor, deviceId } from '../session/api'
 import { useSession } from '../session/context'
 import type { Detection, PosePoint } from '../types'
 import { useAi } from './context'
 import { readDetections, readPose } from './engine'
+import type { FramePixels, LiveRoster } from './livePlayers'
 import { detectPeople, detectSource } from './onnxDetector'
 import { emptyPerformance, noteInference } from './performance'
-import { assignPlayers } from './players'
+import { assignPlayers, holdRackets } from './players'
+
+// Clothes colors are read from the preview at this long side.
+const LOOK_SIDE = 640
+const RACKET_SCORE = 0.2
 
 export function useLiveAnalysis(
   videoRef: RefObject<HTMLVideoElement | null>,
   active: boolean,
+  // Collects the lettered players on the live ball's clock when given.
+  roster?: LiveRoster,
 ) {
   const { engines, confidence, objectDetector, objectModel, poseMode, publish } = useAi()
   const { courts } = useSession()
@@ -20,14 +27,14 @@ export function useLiveAnalysis(
   const detectorRef = useRef(objectDetector)
   const modelRef = useRef(objectModel)
   const poseModeRef = useRef(poseMode)
-  const courtRef = useRef(courtFor(courts, deviceId()))
+  const courtsRef = useRef(courtsFor(courts, deviceId()))
 
   useEffect(() => {
     confidenceRef.current = confidence
     detectorRef.current = objectDetector
     modelRef.current = objectModel
     poseModeRef.current = poseMode
-    courtRef.current = courtFor(courts, deviceId())
+    courtsRef.current = courtsFor(courts, deviceId())
   }, [confidence, objectDetector, objectModel, poseMode, courts])
 
   useEffect(() => {
@@ -45,6 +52,8 @@ export function useLiveAnalysis(
     let inferenceMs = 0
     let presented = 0
     let perf = emptyPerformance()
+    const look = document.createElement('canvas')
+    const lookContext = look.getContext('2d', { willReadFrequently: true })
 
     const countFrame = () => {
       if (stopped) return
@@ -53,6 +62,20 @@ export function useLiveAnalysis(
     }
     if (typeof video.requestVideoFrameCallback === 'function') {
       video.requestVideoFrameCallback(countFrame)
+    }
+
+    // The frame's pixels, read before the detector runs so the colors match where it finds people.
+    const grab = (width: number, height: number): FramePixels | null => {
+      if (!roster || !lookContext) return null
+      const scale = Math.min(1, LOOK_SIDE / Math.max(width, height))
+      const lookWidth = Math.max(1, Math.round(width * scale))
+      const lookHeight = Math.max(1, Math.round(height * scale))
+      if (look.width !== lookWidth || look.height !== lookHeight) {
+        look.width = lookWidth
+        look.height = lookHeight
+      }
+      lookContext.drawImage(video, 0, 0, lookWidth, lookHeight)
+      return { pixels: lookContext.getImageData(0, 0, lookWidth, lookHeight).data, width: lookWidth, height: lookHeight, scale }
     }
 
     const tick = async () => {
@@ -65,13 +88,19 @@ export function useLiveAnalysis(
       const started = performance.now()
       try {
         if (mode === 'pose' && poseModeRef.current === 'people') {
-          const reading = await detectPeople(video, video.videoWidth, video.videoHeight)
+          const width = video.videoWidth
+          const height = video.videoHeight
+          const pixels = grab(width, height)
+          const reading = await detectPeople(video, width, height)
           if (stopped) return
           if (!reading) {
             timer = window.setTimeout(tick, 40)
             return
           }
-          people = assignPlayers(reading.people, courtRef.current, video.videoWidth, video.videoHeight)
+          const watched = courtsRef.current
+          const rackets = detections.filter((item) => item.label === 'tennis racket' && item.score >= RACKET_SCORE)
+          const placed = holdRackets(assignPlayers(reading.people, watched, width, height), rackets)
+          people = roster ? roster.add(started / 1000, placed, pixels, watched, width, height) : placed
           pose = []
           worldPose = []
           inferenceMs = reading.inferenceMs
@@ -126,5 +155,5 @@ export function useLiveAnalysis(
       stopped = true
       window.clearTimeout(timer)
     }
-  }, [active, engines, publish, videoRef])
+  }, [active, engines, publish, videoRef, roster])
 }

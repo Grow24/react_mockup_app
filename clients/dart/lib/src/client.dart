@@ -53,8 +53,8 @@ class PbmpClient {
     return body;
   }
 
-  Future<Object?> _send(String method, String path, [Object? body]) {
-    final request = http.Request(method, _uri(path))..headers.addAll(_keyHeader);
+  Future<Object?> _send(String method, String path, [Object? body, Map<String, String>? query]) {
+    final request = http.Request(method, _uri(path, query))..headers.addAll(_keyHeader);
     if (body != null) {
       request.headers['Content-Type'] = 'application/json';
       request.body = jsonEncode(body);
@@ -149,6 +149,47 @@ class PbmpClient {
     return SessionDetail.fromJson(await _json(_http.send(request).then(http.Response.fromStream)) as Map<String, Object?>);
   }
 
+  /// Uploads a long video straight from a stream, such as a file on disk, without holding it in
+  /// memory. The server streams it to disk; up to 4 GB.
+  Future<SessionDetail> uploadLargeAsset(
+    String sessionId, {
+    required String id,
+    required String kind,
+    required String mimeType,
+    required Stream<List<int>> bytes,
+    required int byteLength,
+    required String cameraLabel,
+    int? createdAt,
+    int? width,
+    int? height,
+    String? deviceId,
+    String? takeId,
+    int? startedAt,
+  }) async {
+    final meta = jsonEncode({
+      'id': id,
+      'kind': kind,
+      'mimeType': mimeType,
+      'createdAt': createdAt ?? DateTime.now().millisecondsSinceEpoch,
+      'cameraLabel': cameraLabel,
+      'snapshot': null,
+      if (width != null) 'width': width,
+      if (height != null) 'height': height,
+      if (deviceId != null) 'deviceId': deviceId,
+      if (takeId != null) 'takeId': takeId,
+      if (startedAt != null) 'startedAt': startedAt,
+    });
+    final request = http.StreamedRequest('PUT', _uri('/api/sessions/$sessionId/assets/stream'))
+      ..headers.addAll(_keyHeader)
+      ..headers['Content-Type'] = mimeType
+      ..headers['X-Asset-Meta'] = Uri.encodeComponent(meta)
+      ..contentLength = byteLength;
+    final sent = _http.send(request).then(http.Response.fromStream);
+    await request.sink.addStream(bytes);
+    await request.sink.close();
+    return SessionDetail.fromJson(await _json(sent) as Map<String, Object?>);
+  }
+
   Future<void> deleteAsset(String id) => _send('DELETE', '/api/assets/$id');
 
   Future<Uint8List> download(String path) async {
@@ -160,9 +201,10 @@ class PbmpClient {
   Future<SessionDetail> saveCourt(String sessionId, CourtCalibration court) async =>
       SessionDetail.fromJson(await _send('PUT', '/api/sessions/$sessionId/court', court.toJson()) as Map<String, Object?>);
 
-  Future<SessionDetail> clearCourt(String sessionId, {String deviceId = ''}) async {
-    final query = deviceId.isEmpty ? '' : '?device=${Uri.encodeQueryComponent(deviceId)}';
-    return SessionDetail.fromJson(await _send('DELETE', '/api/sessions/$sessionId/court$query') as Map<String, Object?>);
+  /// Removes one phone's court; [slot] 1 is the second court in its view.
+  Future<SessionDetail> clearCourt(String sessionId, {String deviceId = '', int slot = 0}) async {
+    final query = {if (deviceId.isNotEmpty) 'device': deviceId, if (slot > 0) 'slot': '$slot'};
+    return SessionDetail.fromJson(await _send('DELETE', '/api/sessions/$sessionId/court', null, query.isEmpty ? null : query) as Map<String, Object?>);
   }
 
   Future<SessionDetail> saveBallTrack(BallTrack track) async =>

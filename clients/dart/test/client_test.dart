@@ -39,6 +39,61 @@ void main() {
     expect(workout.toJson()['finishedAt'], isNull, reason: 'empty fields are left out, as the server expects');
   });
 
+  test('places bounces on the court and calls them like the web app', () {
+    // A court photo that is the court seen straight down at 20 px a meter, far line at the top.
+    final court = CourtCalibration(
+      preset: 'tennis-doubles',
+      assetId: 'p',
+      sourceWidth: 400,
+      sourceHeight: 600,
+      imagePoints: const [CourtPoint(0, 475.4), CourtPoint(219.4, 475.4), CourtPoint(219.4, 0), CourtPoint(0, 0)],
+      callArea: 'singles',
+    );
+    final toCourt = groundFromImage(court)!;
+    final middle = toCourt(const CourtPoint(109.7, 237.7))!;
+    expect(middle.x, closeTo(5.485, 1e-6));
+    expect(middle.y, closeTo(11.885, 1e-6));
+    // The ball's bottom touches the ground: the spot is radius below its center.
+    final track = BallTrack(assetId: 'v', modelId: 'm', sourceWidth: 200, sourceHeight: 300, sampleFps: 10, duration: 1, createdAt: 0, points: [
+      BallPoint(t: 0.3, x: 50, y: 50, radius: 2, score: 0.9, bounce: true),
+      BallPoint(t: 0.6, x: 10, y: 150, radius: 2, score: 0.9, bounce: true),
+    ]);
+    final calls = bounceCalls(track, court);
+    expect(calls.map((call) => call.call), ['in', 'out'], reason: 'the second is in the doubles alley, out for singles');
+    expect(calls.first.meters.y, closeTo(23.77 - 104 / 20, 1e-6));
+    expect(lineCall('cricket-pitch', const CourtPoint(1.5, 10)), 'in');
+  });
+
+  test('reads a camera\'s two courts and a player track', () {
+    final session = SessionDetail.fromJson({
+      'id': 's', 'locked': true, 'createdAt': 0, 'updatedAt': 0,
+      'device': {'id': 'd', 'label': '', 'userAgent': ''},
+      'assets': [],
+      'courts': [
+        {'preset': 'tennis-doubles', 'assetId': 'p', 'sourceWidth': 640, 'sourceHeight': 360, 'imagePoints': [], 'deviceId': 'd', 'slot': 1, 'name': 'Court 7'},
+        {'preset': 'tennis-doubles', 'assetId': 'p', 'sourceWidth': 640, 'sourceHeight': 360, 'imagePoints': [], 'deviceId': 'd'},
+      ],
+      'ballTracks': [],
+      'poseTracks': [
+        {
+          'assetId': 'v', 'sourceWidth': 640, 'sourceHeight': 360, 'sampleFps': 10, 'duration': 60, 'videoDuration': 600,
+          'frames': [
+            {'t': 0, 'people': [
+              {'box': {'x': 1, 'y': 2, 'width': 3, 'height': 4}, 'score': 0.9, 'keypoints': List.filled(51, 1), 'player': 'far', 'id': 'C', 'court': 1},
+            ]},
+          ],
+          'players': [{'id': 'C', 'torso': [200, 30, 30], 'legs': [20, 20, 20], 'frames': 40}],
+        },
+      ],
+      'models': [],
+    });
+    expect(session.courtsFor('d').map((court) => court.label), ['Court 1', 'Court 7']);
+    final track = session.poseTrackFor('v')!;
+    expect(track.unfinished, isTrue);
+    expect(track.frames.single.people.single.name, 'Player C (Court 2, far)');
+    expect(track.players.single.torso, [200, 30, 30]);
+  });
+
   group('against the server', () {
     test('clock, session, and media', () async {
       if (!online) return markTestSkipped('No PBMP server at $baseUrl');
@@ -85,6 +140,26 @@ void main() {
       );
       final withTrack = await client.saveBallTrack(track);
       expect(withTrack.ballTracks.single.points.last.bounce, isTrue);
+
+      final beside = CourtCalibration(
+        preset: 'tennis-doubles',
+        assetId: assetId,
+        sourceWidth: 640,
+        sourceHeight: 360,
+        imagePoints: court.imagePoints,
+        deviceId: deviceId,
+        slot: 1,
+        name: 'Court 2',
+      );
+      expect((await client.saveCourt(sessionId, beside)).courtsFor(deviceId).length, 2);
+      expect((await client.clearCourt(sessionId, deviceId: deviceId, slot: 1)).courtsFor(deviceId).single.slot, isNull);
+
+      final longId = uuid();
+      final long = List<int>.generate(100000, (index) => (index * 7) % 256);
+      final streamed = await client.uploadLargeAsset(sessionId,
+          id: longId, kind: 'video', mimeType: 'video/mp4', bytes: Stream.fromIterable([long.sublist(0, 50000), long.sublist(50000)]), byteLength: long.length, cameraLabel: 'File: match.mp4');
+      expect(streamed.assets.firstWhere((item) => item.id == longId).byteLength, long.length);
+      await client.deleteAsset(longId);
 
       final take = await client.createTake(sessionId, 5, deviceId: deviceId);
       expect(take.startAt - client.serverNow(), inInclusiveRange(1500, 3000));

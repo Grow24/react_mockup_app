@@ -2,6 +2,42 @@ import { expect, test } from '@playwright/test'
 import type { PersonPose } from '../shared/contracts.ts'
 
 type Detector = { detectPeople: (source: CanvasImageSource, width: number, height: number) => Promise<{ people: PersonPose[] } | null> }
+type Live = {
+  LiveRoster: new () => {
+    add: (t: number, people: PersonPose[], look: { pixels: ArrayLike<number>; width: number; height: number; scale: number }, court: null, width: number, height: number) => PersonPose[]
+  }
+}
+
+test('letters real people by their clothes and keeps the letters on the next frame', async ({ page }) => {
+  await page.goto('/')
+  const letters = await page.evaluate(
+    async ([detectorPath, livePath]) => {
+      const { detectPeople } = (await import(detectorPath)) as Detector
+      const { LiveRoster } = (await import(livePath)) as Live
+      const image = new Image()
+      image.src = '/e2e/.cache/bus.jpg'
+      await image.decode()
+      const { naturalWidth: width, naturalHeight: height } = image
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const context = canvas.getContext('2d')!
+      context.drawImage(image, 0, 0)
+      const look = { pixels: context.getImageData(0, 0, width, height).data, width, height, scale: 1 }
+      const people = (await detectPeople(image, width, height))?.people ?? []
+      const roster = new LiveRoster()
+      const first = roster.add(1, people, look, null, width, height)
+      // The same people listed the other way round a third of a second later.
+      const second = roster.add(1.33, people.slice().reverse(), look, null, width, height).reverse()
+      return { first: first.map((person) => person.id ?? null), second: second.map((person) => person.id ?? null) }
+    },
+    ['/src/vision/onnxDetector.ts', '/src/vision/livePlayers.ts'],
+  )
+  const named = letters.first.filter((id) => id)
+  expect(named.length).toBeGreaterThanOrEqual(3)
+  expect(new Set(named).size, 'one letter per person').toBe(named.length)
+  expect(letters.second).toEqual(letters.first)
+})
 
 test('YOLOv8n-pose finds several people with their joints in a photo', async ({ page }) => {
   await page.goto('/')

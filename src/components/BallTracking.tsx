@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import type { BallPoint, BallTrack, CourtCalibration, CourtPoint, MotionTrack } from '../../shared/contracts.ts'
+import { trackUnfinished, type BallPoint, type BallTrack, type CourtCalibration, type CourtPoint, type MotionTrack } from '../../shared/contracts.ts'
+import { formatClock } from '../format'
 import { courtArea } from '../../shared/court.ts'
 import { BallFlight } from './BallFlight'
 import { BallModelSelect } from './BallModelSelect'
@@ -16,6 +17,8 @@ import { projectToCourt } from '../vision/opencv'
 import { length, useUnits, xyz, type Units } from '../units'
 
 const FPS_KEY = 'pbmp-ball-fps'
+
+const minutes = (seconds: number) => formatClock(seconds * 1000)
 
 function readFps() {
   try {
@@ -316,13 +319,14 @@ export function BallPanel({
     return () => abortRef.current?.abort()
   }, [])
 
-  function start() {
+  function start(carryOn = false) {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
     setMessage(null)
     setFailed(false)
     setProgress({ done: 0, total: 0, found: 0 })
+    let saved: BallTrack | null = null
     trackBall(
       url,
       assetId,
@@ -332,6 +336,13 @@ export function BallPanel({
       },
       ballModel.model,
       fps,
+      {
+        resume: carryOn ? track : null,
+        onChunk: (partial) => {
+          saved = partial
+          onSave(partial)
+        },
+      },
     )
       .then((next) => {
         if (controller.signal.aborted) return
@@ -344,7 +355,12 @@ export function BallPanel({
       })
       .catch((caught) => {
         if (caught instanceof DOMException && caught.name === 'AbortError') {
-          setMessage('Ball tracking was stopped. Nothing was saved.')
+          const kept = saved as BallTrack | null
+          setMessage(
+            kept?.videoDuration
+              ? `Stopped at ${minutes(kept.duration)} of ${minutes(kept.videoDuration)}. What was read is saved; Continue carries on from there.`
+              : 'Ball tracking was stopped. Nothing was saved.',
+          )
           return
         }
         console.error(caught)
@@ -362,6 +378,7 @@ export function BallPanel({
   }
 
   const bounces = track?.points.filter((point) => point.bounce) ?? []
+  const unfinished = !!track && !track.live && trackUnfinished(track)
 
   return (
     <section className="still-pose ball-panel" aria-label="Ball tracking">
@@ -407,9 +424,16 @@ export function BallPanel({
             Stop
           </button>
         ) : (
-          <button type="button" className="primary" onClick={start}>
-            {track ? 'Track again' : 'Track the ball'}
-          </button>
+          <>
+            {unfinished ? (
+              <button type="button" className="primary" onClick={() => start(true)}>
+                Continue from {minutes(track!.duration)}
+              </button>
+            ) : null}
+            <button type="button" className={unfinished ? 'secondary' : 'primary'} onClick={() => start()}>
+              {track ? 'Track again' : 'Track the ball'}
+            </button>
+          </>
         )}
         {track && !running ? (
           <button type="button" className="secondary" onClick={onClear}>
@@ -421,7 +445,7 @@ export function BallPanel({
         <p className="muted" role="status">
           {progress.total === 0
             ? 'Loading YOLOv8n and opening the video.'
-            : `Reading frame ${progress.done} of ${progress.total} · ball seen in ${progress.found}`}
+            : `Reading frame ${progress.done} of ${progress.total} (${minutes(progress.done / fps)} of ${minutes(progress.total / fps)}) · ball seen in ${progress.found}`}
         </p>
       ) : null}
       {message ? (
@@ -436,6 +460,12 @@ export function BallPanel({
             {bounces.length === 1 ? '1 bounce' : `${bounces.length} bounces`}. Play the video to see the
             trail.
           </p>
+          {unfinished ? (
+            <p className="note">
+              Read up to {minutes(track.duration)} of {minutes(track.videoDuration!)}. Continue carries on from there; what is
+              read so far already shows below.
+            </p>
+          ) : null}
           {track.live ? (
             <p className="muted">
               Tracked live at about {track.sampleFps} checks per second while recording. Track again to read{' '}

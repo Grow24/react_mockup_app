@@ -8,6 +8,7 @@ import {
 import { candidatesFrom, courtFitsTrack, linkBallTrack, type BallFrame } from './ball'
 import { flightAt, flightBounces, groundFromImage, lineCall, positionAt, projectPoint, type FlightFit, type Vec3 } from './flight'
 import { fitFlightsInWorker } from './flightFit'
+import type { LiveFit } from './livePlayers'
 import type { DetectorModel } from './models'
 import { detectSource, onnxBackend, prepareOnnx, type OnnxBackend } from './onnxDetector'
 
@@ -16,6 +17,8 @@ const KEEP_SECONDS = 15 * 60
 const FIT_EVERY_SECONDS = 0.5
 const SAME_BOUNCE_SECONDS = 0.25
 const SHOW_BOUNCES = 6
+// Enough for a long session's score.
+const KEEP_BOUNCES = 3000
 const MIN_SCORE = 0.15
 // The latest fit covers the window up to half a second ago; the newest ball is carried on its arc this far.
 const CARRY_SECONDS = 0.6
@@ -34,6 +37,8 @@ export type LiveBallView = {
   height: number
   points: BallPoint[]
   bounces: LiveBounce[]
+  // Every bounce the 3D fit confirmed on the court since live ball started.
+  confirmed: { t: number; p: { x: number; y: number } }[]
   // The newest ball's court coordinates from the last 3D fit, with where it sits in the preview.
   ballNow: { p: Vec3; image: { x: number; y: number } } | null
 }
@@ -75,6 +80,8 @@ export function useLiveBall(
   enabled: boolean,
   court: CourtCalibration | null,
   model: DetectorModel,
+  // Hears every fitted window, for reading the shots in it.
+  onFit?: (window: LiveFit) => void,
 ) {
   const [status, setStatus] = useState<LiveBallStatus>('off')
   const [error, setError] = useState<string | null>(null)
@@ -88,10 +95,12 @@ export function useLiveBall(
   const courtRef = useRef(court)
   const modelRef = useRef(model)
   const fitRef = useRef<{ from: number; fit: FlightFit; court: CourtCalibration } | null>(null)
+  const onFitRef = useRef(onFit)
 
   useEffect(() => {
     courtRef.current = court
     modelRef.current = model
+    onFitRef.current = onFit
   })
 
   useEffect(() => {
@@ -114,7 +123,7 @@ export function useLiveBall(
         list.push(bounce)
         list.sort((a, b) => a.t - b.t)
       }
-      if (list.length > 50) list.splice(0, list.length - 50)
+      if (list.length > KEEP_BOUNCES) list.splice(0, list.length - KEEP_BOUNCES)
     }
 
     const placed = (image: { x: number; y: number }, width: number, height: number) => {
@@ -137,6 +146,7 @@ export function useLiveBall(
         .then((fit) => {
           if (!active || !fit) return
           fitRef.current = { from, fit, court: current }
+          onFitRef.current?.({ from, duration: track.duration, fit, court: current })
           const settledFrom = from + SAME_BOUNCE_SECONDS
           const settledTo = from + track.duration - SAME_BOUNCE_SECONDS
           bouncesRef.current = bouncesRef.current.filter(
@@ -245,6 +255,7 @@ export function useLiveBall(
           height,
           points,
           bounces: bouncesRef.current.slice(-SHOW_BOUNCES),
+          confirmed: bouncesRef.current.flatMap((bounce) => (bounce.confirmed && bounce.meters ? [{ t: bounce.t, p: bounce.meters }] : [])),
           ballNow: carried(points.at(-1), width, height),
         })
       }

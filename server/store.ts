@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
-import { unlink, writeFile } from 'node:fs/promises'
+import { rename, unlink, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
@@ -243,6 +244,7 @@ export function backupFiles() {
   database().prepare('VACUUM INTO ?').run(snapshot)
   const files = [{ name: 'pbmp.sqlite', path: snapshot, size: statSync(snapshot).size, mtime: Date.now() }]
   for (const name of existsSync(mediaDir) ? readdirSync(mediaDir) : []) {
+    if (name.endsWith('.upload')) continue
     const file = path.join(mediaDir, name)
     const info = statSync(file)
     if (info.isFile()) files.push({ name: `media/${name}`, path: file, size: info.size, mtime: info.mtimeMs })
@@ -452,7 +454,10 @@ export function readCourts(sessionId: string): CourtCalibration[] {
       if (court.callArea) clean.callArea = court.callArea
       if (court.estimatedPoints) clean.estimatedPoints = court.estimatedPoints
       if (court.name) clean.name = court.name
-      if (row.device_id) clean.deviceId = row.device_id
+      // A camera's second court is kept under "device:1".
+      const [device, slot] = row.device_id.split(':')
+      if (device) clean.deviceId = device
+      if (Number(slot) > 0) clean.slot = Number(slot)
       courts.push(clean)
     } catch {
       // A broken row is skipped; the court can be marked again.
@@ -461,8 +466,9 @@ export function readCourts(sessionId: string): CourtCalibration[] {
   return courts
 }
 
-export function saveCourt(sessionId: string, deviceId: string, court: CourtCalibration | null) {
+export function saveCourt(sessionId: string, device: string, court: CourtCalibration | null, slot = 0) {
   if (!sessionById(sessionId)) return undefined
+  const deviceId = slot > 0 ? `${device}:${slot}` : device
   if (!court) {
     database().prepare('DELETE FROM device_courts WHERE session_id = ? AND device_id = ?').run(sessionId, deviceId)
   } else {
@@ -819,6 +825,11 @@ export function mediaPath(id: string) {
   return path.join(mediaDir, id)
 }
 
+// Where a large upload is streamed before it becomes the asset's file.
+export function uploadPath(id: string) {
+  return path.join(mediaDir, `${id}.${randomUUID()}.upload`)
+}
+
 export async function saveAsset(
   sessionId: string,
   asset: {
@@ -834,13 +845,19 @@ export async function saveAsset(
     takeId?: string
     startedAt?: number
   },
-  bytes: Buffer,
+  // The file itself, or an upload already streamed to disk.
+  bytes: Buffer | { file: string; size: number },
 ) {
-  if (!sessionById(sessionId)) return undefined
+  const discard = () => (Buffer.isBuffer(bytes) ? Promise.resolve() : unlink(bytes.file).catch(() => undefined))
+  if (!sessionById(sessionId)) {
+    await discard()
+    return undefined
+  }
   const existing = database().prepare('SELECT session_id FROM assets WHERE id = ?').get(asset.id) as
     | { session_id: string }
     | undefined
   if (existing) {
+    await discard()
     if (existing.session_id !== sessionId) return 'conflict' as const
     return getSession(sessionId)
   }
@@ -863,7 +880,8 @@ export async function saveAsset(
       }
     : null
 
-  await writeFile(mediaPath(asset.id), bytes)
+  if (Buffer.isBuffer(bytes)) await writeFile(mediaPath(asset.id), bytes)
+  else await rename(bytes.file, mediaPath(asset.id))
   try {
     database().prepare(
       `INSERT INTO assets (
@@ -879,7 +897,7 @@ export async function saveAsset(
       asset.cameraLabel,
       asset.width ?? null,
       asset.height ?? null,
-      bytes.byteLength,
+      Buffer.isBuffer(bytes) ? bytes.byteLength : bytes.size,
       inference ? JSON.stringify(inference) : null,
       spatial ? JSON.stringify(spatial) : null,
       asset.deviceId ?? null,

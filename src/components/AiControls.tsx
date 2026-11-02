@@ -4,7 +4,7 @@ import { useAi } from '../vision/context'
 import { modelChoices } from '../vision/models'
 import { onnxBackend } from '../vision/onnxDetector'
 import { OBJECT_MODEL_ID } from '../vision/yolo'
-import { playerName } from '../vision/players'
+import { personName } from '../vision/players'
 import type { PoseMode } from '../vision/context'
 
 function statusLabel(status: string) {
@@ -62,8 +62,10 @@ export function AiControls() {
       {ai.status === 'ready' && model ? (
         <p className="muted">
           {model.builtIn ? 'YOLOv8n' : model.name} is running in a worker
-          {onnxBackend() ? (onnxBackend()!.name === 'webgpu' ? ' on WebGPU' : ` on WASM ×${onnxBackend()!.threads}`) : ''}. Pose
-          still uses MediaPipe{ai.delegate ? ` on ${ai.delegate}` : ''}.
+          {onnxBackend() ? (onnxBackend()!.name === 'webgpu' ? ' on WebGPU' : ` on WASM ×${onnxBackend()!.threads}`) : ''}.{' '}
+          {ai.poseMode === 'people'
+            ? 'Pose uses YOLOv8n-pose in the same worker.'
+            : `Pose still uses MediaPipe${ai.delegate ? ` on ${ai.delegate}` : ''}.`}
         </p>
       ) : null}
       {ai.status === 'ready' && ai.objectDetector === OBJECT_MODEL_ID && ai.delegate ? (
@@ -97,7 +99,7 @@ export function AiControls() {
       </label>
       <p className="muted">
         {ai.poseMode === 'people'
-          ? 'YOLOv8n-pose finds 17 joints on everyone in view (about 13 MB the first time). With the court marked for this phone, the near and far players are named and people off the court are left out.'
+          ? 'YOLOv8n-pose finds 17 joints on everyone in view (about 13 MB the first time). Each player gets a letter from their clothes. With the court marked for this phone, people off the court are left out.'
           : 'MediaPipe follows one person with 33 points and a 3D pose.'}
       </p>
 
@@ -132,7 +134,7 @@ export function AiControls() {
                   </li>
                 ))}
                 {ai.latest.people?.length ? (
-                  ai.latest.people.map((person, index) => <li key={person.player ?? index}>{playerName(person.player)} found</li>)
+                  ai.latest.people.map((person, index) => <li key={person.id ?? person.player ?? index}>{personName(person)} found</li>)
                 ) : (
                   <li>{poseReady ? 'Pose landmarks visible' : 'No pose in this frame'}</li>
                 )}

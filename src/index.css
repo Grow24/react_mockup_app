@@ -242,6 +242,10 @@ h1, h2, h3 {
 .check { display: flex; gap: 8px; align-items: center; font-size: 0.9rem; }
 .video-still { overflow: hidden; }
 .player-line { display: flex; gap: 8px; align-items: center; }
+.live-map { display: block; width: min(100%, 220px); margin: 8px auto; }
+.file-pick { display: grid; gap: 6px; justify-items: start; margin: 10px 0 0; }
+.file-pick label:focus-within { outline: 2px solid #0f6a64; outline-offset: 2px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .match-timeline { position: relative; height: 34px; background: #ece4d8; border-radius: 8px; margin: 6px 0 14px; }
 .match-span { position: absolute; top: 8px; height: 18px; border: 0; border-radius: 4px; padding: 0; cursor: pointer; }
 .match-span.rally { background: #2e6b4a; }

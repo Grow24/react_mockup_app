@@ -365,6 +365,32 @@ function heightSigma(chain: Chain, index: number, group: Observation[]) {
   return noisePx * Math.sqrt(Math.max(0, variance))
 }
 
+// Splits a long track into about `parts` pieces of similar size, cutting only where the ball was
+// unseen long enough that fitting splits there anyway, so fitting the pieces apart gives the same flights.
+export function splitForFitting(points: BallPoint[], parts: number): BallPoint[][] {
+  if (parts <= 1 || points.length === 0) return [points]
+  const pieces: BallPoint[][] = []
+  const target = points.length / parts
+  let start = 0
+  for (let index = 1; index < points.length; index += 1) {
+    if (index - start >= target && points[index]!.t - points[index - 1]!.t > MAX_GAP_SECONDS && pieces.length < parts - 1) {
+      pieces.push(points.slice(start, index))
+      start = index
+    }
+  }
+  pieces.push(points.slice(start))
+  return pieces
+}
+
+export function mergeFits(fits: FlightFit[]): FlightFit | null {
+  if (fits.length === 0) return null
+  return {
+    camera: fits[0]!.camera,
+    flights: fits.flatMap((fit) => fit.flights).sort((a, b) => a.from - b.from),
+    skipped: fits.reduce((sum, fit) => sum + fit.skipped, 0),
+  }
+}
+
 function splitOnGaps(points: BallPoint[]) {
   const pieces: BallPoint[][] = []
   let current: BallPoint[] = []

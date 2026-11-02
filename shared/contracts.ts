@@ -63,6 +63,8 @@ export type PersonPose = {
   id?: string
   // The racquet in their hand this frame, and which hand holds it.
   racket?: Box & { score: number; hand: 'left' | 'right' }
+  // Which of the camera's courts they stand on, when it watches more than one.
+  court?: number
 }
 
 // What a lettered player looks like: shirt and shorts color histograms, and their average colors.
@@ -204,7 +206,11 @@ export type CourtCalibration = {
   // How many of the last image points were estimated (from three clicks and a level phone), not clicked.
   // Estimated points may lie outside the photo.
   estimatedPoints?: number
+  // A camera can watch two courts side by side: 0 is the first marked, 1 the second. Missing means 0.
+  slot?: number
 }
+
+export const COURTS_PER_CAMERA = 2
 
 export const COURT_PRESETS: Record<CourtPreset, { label: string; widthMeters: number; lengthMeters: number }> = {
   'tennis-doubles': { label: 'Tennis court', widthMeters: 10.97, lengthMeters: 23.77 },
@@ -233,10 +239,17 @@ export type BallTrack = {
   createdAt: number
   points: BallPoint[]
   live?: boolean
+  // The length being read, when the track so far covers only the first part of it.
+  videoDuration?: number
 }
 
-// 11 minutes at 30 frames per second.
-export const BALL_TRACK_LIMIT = 20000
+// A long video is read up to an hour, a minute at a time; each minute read is saved, so a stopped
+// or interrupted run can carry on from there.
+export const LONG_VIDEO_SECONDS = 3600
+export const CHUNK_SECONDS = 60
+
+// An hour at 30 frames per second.
+export const BALL_TRACK_LIMIT = 110_000
 
 export type PoseFrame = { t: number; people: PersonPose[] }
 
@@ -251,10 +264,22 @@ export type PoseTrack = {
   createdAt: number
   frames: PoseFrame[]
   players?: PlayerProfile[]
+  videoDuration?: number
 }
 
-// Two minutes at 30 frames per second.
-export const POSE_TRACK_LIMIT = 3700
+// An hour at 10 frames per second; longer videos are read at fewer frames per second.
+export const POSE_TRACK_LIMIT = 36_500
+
+// The frames per second a video of this length is read at for a pose or motion track: the chosen
+// rate, or fewer when a long video would not fit in one track.
+export function fpsForLength(duration: number, fps: number) {
+  return Math.max(1, Math.min(fps, Math.floor(POSE_TRACK_LIMIT / Math.max(1, duration))))
+}
+
+// Whether a track covers only the first part of the length it is reading.
+export function trackUnfinished(track: { duration: number; sampleFps: number; videoDuration?: number }) {
+  return track.videoDuration != null && track.duration < track.videoDuration - 1.5 / track.sampleFps
+}
 
 // How the camera moved through a video, against the photo the court was marked on. Each h is a
 // row-major 3x3 homography from that photo's pixels to the frame, measured in the photo's pixels.

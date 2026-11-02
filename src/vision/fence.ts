@@ -1,3 +1,4 @@
+import { LONG_VIDEO_SECONDS } from '../../shared/contracts.ts'
 import { openVideo, seek } from './ballTracker'
 import { loadOpenCv } from './opencv'
 
@@ -235,7 +236,7 @@ export class FenceRemover {
 export async function learnFence(url: string, remover: FenceRemover, signal: AbortSignal, onProgress: (done: number, total: number) => void, samples = 16) {
   const video = await openVideo(url)
   try {
-    const duration = Math.min(video.duration, 120)
+    const duration = Math.min(video.duration, LONG_VIDEO_SECONDS)
     if (!Number.isFinite(duration) || duration <= 0) throw new Error('This video has no length to read.')
     for (let index = 0; index < samples; index += 1) {
       if (signal.aborted) throw new DOMException('Learning the fence was stopped.', 'AbortError')

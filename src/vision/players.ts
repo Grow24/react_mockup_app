@@ -54,7 +54,7 @@ export function feetOf(person: PersonPose) {
   return { x: person.box.x + person.box.width / 2, y: person.box.y + person.box.height }
 }
 
-function courtFits(court: CourtCalibration | null, width: number, height: number) {
+export function courtFits(court: CourtCalibration | null, width: number, height: number) {
   return !!court && Math.abs(court.sourceWidth / court.sourceHeight - width / height) / (width / height) <= 0.02
 }
 
@@ -66,25 +66,65 @@ export function feetOnCourt(person: PersonPose, court: CourtCalibration | null, 
   return toCourt?.({ x: (feet.x * court.sourceWidth) / width, y: (feet.y * court.sourceHeight) / height }) ?? null
 }
 
+const slotOf = (court: Pick<CourtCalibration, 'slot'>) => court.slot ?? 0
+
+// Whether the person stands on this court, of the camera's courts.
+export function onCourt(person: PersonPose, court: Pick<CourtCalibration, 'slot'>) {
+  return (person.court ?? 0) === slotOf(court)
+}
+
+// The court of the camera's courts that the person stands on.
+export function courtOf(person: PersonPose, courts: CourtCalibration[]) {
+  return courts.find((court) => onCourt(person, court)) ?? courts[0] ?? null
+}
+
+// Where the person stands, for telling players apart by where they were: court meters with a
+// court, kept far apart for a camera's second court, or image pixels without one.
+export function identitySpot(person: PersonPose, courts: CourtCalibration[], width: number, height: number) {
+  if (courts.length === 0) return feetOf(person)
+  const court = courtOf(person, courts)
+  const feet = feetOnCourt(person, court, width, height)
+  return feet && court ? { x: feet.x + slotOf(court) * 100, y: feet.y } : null
+}
+
 // Names each player by the side of the net they stand on. With a court, people well outside it
-// (umpire, ball kids, spectators) are dropped; without one, the two biggest people are the players.
-export function assignPlayers(people: PersonPose[], court: CourtCalibration | null, width: number, height: number): PersonPose[] {
+// (umpire, ball kids, spectators) are dropped; with two courts in view, each person goes to the
+// court they stand on. Without one, the two biggest people are the players.
+export function assignPlayers(
+  people: PersonPose[],
+  courtOrCourts: CourtCalibration | CourtCalibration[] | null,
+  width: number,
+  height: number,
+): PersonPose[] {
   const area = (person: PersonPose) => person.box.width * person.box.height
-  const placed = people.map((person) => ({ person, spot: feetOnCourt(person, court, width, height) }))
-  if (court && courtFits(court, width, height)) {
-    const { widthMeters, lengthMeters } = COURT_PRESETS[court.preset]
-    const margin = COURT_MARGIN[court.preset]
-    const sides: Record<'near' | 'far', PersonPose[]> = { near: [], far: [] }
-    for (const { person, spot } of placed) {
-      if (!spot) continue
-      if (spot.x < -margin.side || spot.x > widthMeters + margin.side || spot.y < -margin.end || spot.y > lengthMeters + margin.end) continue
-      sides[spot.y < lengthMeters / 2 ? 'near' : 'far'].push(person)
+  const listed = Array.isArray(courtOrCourts) ? courtOrCourts : courtOrCourts ? [courtOrCourts] : []
+  const courts = listed.filter((court) => courtFits(court, width, height)).sort((a, b) => slotOf(a) - slotOf(b))
+  if (courts.length > 0) {
+    const several = courts.length > 1
+    const groups = new Map<string, PersonPose[]>()
+    for (const person of people) {
+      let best: { court: CourtCalibration; side: 'near' | 'far'; outside: number } | null = null
+      for (const court of courts) {
+        const spot = feetOnCourt(person, court, width, height)
+        if (!spot) continue
+        const { widthMeters, lengthMeters } = COURT_PRESETS[court.preset]
+        const margin = COURT_MARGIN[court.preset]
+        if (spot.x < -margin.side || spot.x > widthMeters + margin.side || spot.y < -margin.end || spot.y > lengthMeters + margin.end) continue
+        // Between two courts the run-offs overlap; the court whose lines they are nearer wins.
+        const outside = Math.max(0, -spot.x, spot.x - widthMeters, -spot.y, spot.y - lengthMeters)
+        if (!best || outside < best.outside) best = { court, side: spot.y < lengthMeters / 2 ? 'near' : 'far', outside }
+      }
+      if (!best) continue
+      const key = `${slotOf(best.court)}:${best.side}`
+      groups.set(key, [...(groups.get(key) ?? []), person])
     }
-    return (['near', 'far'] as const).flatMap((side) =>
-      sides[side]
-        .sort((a, b) => area(b) - area(a))
-        .slice(0, 2)
-        .map((person, index) => ({ ...person, player: index === 0 ? side : `${side}-2` })),
+    return courts.flatMap((court) =>
+      (['near', 'far'] as const).flatMap((side) =>
+        (groups.get(`${slotOf(court)}:${side}`) ?? [])
+          .sort((a, b) => area(b) - area(a))
+          .slice(0, 2)
+          .map((person, index) => ({ ...person, player: index === 0 ? side : `${side}-2`, ...(several ? { court: slotOf(court) } : {}) })),
+      ),
     )
   }
   const biggest = people.slice().sort((a, b) => area(b) - area(a)).slice(0, 2)
@@ -150,11 +190,14 @@ export const ID_COLORS: Record<string, string> = {
   H: '#e8a0c8',
 }
 
-// "Player A (near)", or the side alone when no letter was given.
-export function personName(person: { id?: string; player?: string }) {
-  if (!person.id) return playerName(person.player)
-  const side = person.player?.startsWith('near') ? ' (near)' : person.player?.startsWith('far') ? ' (far)' : ''
-  return `Player ${person.id}${side}`
+// "Player A (near)", or the side alone when no letter was given. With two courts in view, the
+// court comes first: "Player C (Court 2, far)".
+export function personName(person: { id?: string; player?: string; court?: number }) {
+  const court = person.court != null ? `Court ${person.court + 1}` : ''
+  if (!person.id) return `${playerName(person.player)}${court ? ` (${court})` : ''}`
+  const side = person.player?.startsWith('near') ? 'near' : person.player?.startsWith('far') ? 'far' : ''
+  const where = [court, side].filter(Boolean).join(', ')
+  return `Player ${person.id}${where ? ` (${where})` : ''}`
 }
 
 export function personColor(person: { id?: string; player?: string }) {
@@ -210,7 +253,7 @@ export function playerPaths(track: PoseTrack, court: CourtCalibration | null) {
   for (const frame of track.frames) {
     for (const person of frame.people) {
       const key = person.id ?? person.player
-      if (!key) continue
+      if (!key || (court && !onCourt(person, court))) continue
       const spot = feetOnCourt(person, court, track.sourceWidth, track.sourceHeight)
       if (!spot) continue
       const list = paths.get(key) ?? []

@@ -26,6 +26,7 @@ import {
   PrivateSessionError,
   unlockSession,
   fetchSession,
+  latestOnly,
   openSession,
   courtKeyOf,
   deviceId as ownDeviceId,
@@ -94,6 +95,8 @@ function serverCourts(session: SessionDetail) {
   if (Array.isArray(session.courts)) return session.courts
   return session.court ? [session.court] : []
 }
+
+const saveLane = latestOnly()
 
 function requestedSessionId() {
   return new URLSearchParams(window.location.search).get('session')
@@ -167,13 +170,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         ...captureFields({ ...input, deviceId: input.deviceId ?? ownDeviceId() }),
       }
       setAssets((current) => [asset, ...current])
-      const upload = rememberAsset(asset, input.blob).then(() => publishRemote(asset, input.blob))
+      // A long video can be too big for this browser's storage; the server copy still goes up.
+      const kept = rememberAsset(asset, input.blob).then(
+        () => true,
+        (error) => {
+          console.error(error)
+          return false
+        },
+      )
+      const upload = kept.then(async (stored) => {
+        await publishRemote(asset, input.blob)
+        return stored
+      })
       uploadsRef.current.set(
         asset.id,
-        upload.catch(() => undefined).finally(() => uploadsRef.current.delete(asset.id)),
+        upload.then(() => undefined, () => undefined).finally(() => uploadsRef.current.delete(asset.id)),
       )
       void upload
-        .then(() => setStorageWarning(null))
+        .then((stored) =>
+          setStorageWarning(
+            stored || backendRef.current === 'online'
+              ? null
+              : 'There was no room for this file in this browser and the server is offline, so it lasts only for this visit.',
+          ),
+        )
         .catch((error) => {
           console.error(error)
           setStorageWarning(
@@ -203,11 +223,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (backendRef.current !== 'online') return
       // A track saved right after a recording has to wait for that video to reach the server.
       const uploaded = uploadsRef.current.get(assetId) ?? Promise.resolve()
-      const request = uploaded.then(() => (track ? saveRemoteBallTrack(track) : clearRemoteBallTrack(assetId)))
-      void request.catch((error) => {
-        console.error(error)
-        setStorageWarning('The ball track stays in this browser. The server did not keep it.')
-      })
+      saveLane(`ball:${assetId}`, () =>
+        uploaded
+          .then(() => (track ? saveRemoteBallTrack(track) : clearRemoteBallTrack(assetId)))
+          .catch((error) => {
+            console.error(error)
+            setStorageWarning('The ball track stays in this browser. The server did not keep it.')
+          }),
+      )
     },
     [publishBallTracks],
   )
@@ -225,11 +248,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return
     }
     const uploaded = uploadsRef.current.get(assetId) ?? Promise.resolve()
-    const request = uploaded.then(() => (track ? saveRemotePoseTrack(track) : clearRemotePoseTrack(assetId)))
-    void request.catch((error) => {
-      console.error(error)
-      setStorageWarning('The player track was not saved on the server; it lasts only for this visit.')
-    })
+    saveLane(`pose:${assetId}`, () =>
+      uploaded
+        .then(() => (track ? saveRemotePoseTrack(track) : clearRemotePoseTrack(assetId)))
+        .catch((error) => {
+          console.error(error)
+          setStorageWarning('The player track was not saved on the server; it lasts only for this visit.')
+        }),
+    )
   }, [])
 
   const setMotionTrack = useCallback((assetId: string, track: MotionTrack | null) => {
@@ -241,11 +267,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     })
     if (backendRef.current !== 'online') return
     const uploaded = uploadsRef.current.get(assetId) ?? Promise.resolve()
-    const request = uploaded.then(() => (track ? saveRemoteMotionTrack(track) : clearRemoteMotionTrack(assetId)))
-    void request.catch((error) => {
-      console.error(error)
-      setStorageWarning('The camera motion was not saved on the server; it lasts only for this visit.')
-    })
+    saveLane(`motion:${assetId}`, () =>
+      uploaded
+        .then(() => (track ? saveRemoteMotionTrack(track) : clearRemoteMotionTrack(assetId)))
+        .catch((error) => {
+          console.error(error)
+          setStorageWarning('The camera motion was not saved on the server; it lasts only for this visit.')
+        }),
+    )
   }, [])
 
   const removeAsset = useCallback((id: string) => {

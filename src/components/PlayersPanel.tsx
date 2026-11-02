@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
-import type { CourtCalibration, MotionTrack, PlayerProfile, PoseTrack } from '../../shared/contracts.ts'
+import { trackUnfinished, type CourtCalibration, type MotionTrack, type PlayerProfile, type PoseTrack } from '../../shared/contracts.ts'
+import { formatClock } from '../format'
 import { courtPixelSize, mapPixel } from '../vision/court'
 import { drawCourtLines } from '../vision/courtMap'
 import { motionAt, movedCourt } from '../vision/motion'
@@ -8,6 +9,7 @@ import {
   feetOnCourt,
   frameAt,
   jointAngles,
+  onCourt,
   personColor,
   personName,
   playerPaths,
@@ -16,6 +18,8 @@ import { POSE_FPS_CHOICES, trackPlayers } from '../vision/playerTracker'
 import { length, useUnits, xyz, type Units } from '../units'
 
 const FPS_KEY = 'pbmp-pose-fps'
+
+const minutes = (seconds: number) => formatClock(seconds * 1000)
 
 function readFps() {
   try {
@@ -41,7 +45,7 @@ function momentLines(track: PoseTrack, court: CourtCalibration | null, t: number
   const frame = frameAt(track, t)
   if (!frame || frame.people.length === 0) return [`At ${t.toFixed(2)} s no player is in view.`]
   return frame.people.map((person) => {
-    const feet = feetOnCourt(person, court, track.sourceWidth, track.sourceHeight)
+    const feet = court && onCourt(person, court) ? feetOnCourt(person, court, track.sourceWidth, track.sourceHeight) : null
     const angles = jointAngles(person)
     const where = feet ? `feet at ${xyz({ ...feet, z: 0 }, units)}` : 'mark the court to place the feet'
     return `${personName(person)} · ${where} · knees L ${angleText(angles.leftKnee)} R ${angleText(angles.rightKnee)} · elbows L ${angleText(angles.leftElbow)} R ${angleText(angles.rightElbow)} · hips L ${angleText(angles.leftHip)} R ${angleText(angles.rightHip)}`
@@ -90,7 +94,7 @@ export function PoseOverlay({
       const moved = placed && motion ? motionAt(motion, video.currentTime) : null
       const here = placed && moved ? movedCourt(placed, moved) : placed
       drawPeople(context, now.people, bounds.width / track.sourceWidth, bounds.height / track.sourceHeight, (person) => {
-        const feet = feetOnCourt(person, here, track.sourceWidth, track.sourceHeight)
+        const feet = here && onCourt(person, here) ? feetOnCourt(person, here, track.sourceWidth, track.sourceHeight) : null
         return `${personName(person)}${feet ? ` · ${xyz(feet, units)}` : ''}`
       })
     }
@@ -176,6 +180,7 @@ export function PlayersPanel({
   track,
   steadyTrack,
   court,
+  courts,
   seeds,
   onSave,
   onClear,
@@ -187,6 +192,8 @@ export function PlayersPanel({
   // The same track with camera motion taken out, for feet positions and distances.
   steadyTrack?: PoseTrack | null
   court: CourtCalibration | null
+  // Every court this camera watches, when it sees two side by side.
+  courts?: CourtCalibration[]
   // Players lettered in the session's other videos, so the same person gets the same letter.
   seeds?: PlayerProfile[]
   onSave: (track: PoseTrack) => void
@@ -197,11 +204,13 @@ export function PlayersPanel({
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const momentRef = useRef<HTMLUListElement | null>(null)
   const measured = steadyTrack ?? track
   const placed = measured ? fits(measured, court) : null
   const summary = useMemo(() => (measured ? playerPaths(measured, placed).summary : null), [measured, placed])
+  const unfinished = !!track && trackUnfinished(track)
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -231,19 +240,40 @@ export function PlayersPanel({
     return () => cancelAnimationFrame(frame)
   }, [measured, placed, videoRef, units])
 
-  async function run() {
+  async function run(carryOn = false) {
     const controller = new AbortController()
     abortRef.current = controller
     setRunning(true)
     setError(null)
+    setNotice(null)
     setProgress(null)
+    let saved: PoseTrack | null = null
     try {
-      const next = await trackPlayers(url, assetId, court, controller.signal, (done, total, found) => setProgress({ done, total, found }), fps, seeds ?? [])
+      const next = await trackPlayers(
+        url,
+        assetId,
+        courts && courts.length > 1 ? courts : court,
+        controller.signal,
+        (done, total, found) => setProgress({ done, total, found }),
+        fps,
+        seeds ?? [],
+        {
+          resume: carryOn ? track : null,
+          onChunk: (partial) => {
+            saved = partial
+            onSave(partial)
+          },
+        },
+      )
       onSave(next)
     } catch (caught) {
+      setProgress(null)
       if (!(caught instanceof DOMException && caught.name === 'AbortError')) {
         console.error(caught)
         setError(caught instanceof Error ? caught.message : 'The players could not be tracked.')
+      } else {
+        const kept = saved as PoseTrack | null
+        if (kept?.videoDuration) setNotice(`Stopped at ${minutes(kept.duration)} of ${minutes(kept.videoDuration)}. What was read is saved; Continue carries on from there.`)
       }
     } finally {
       setRunning(false)
@@ -288,9 +318,16 @@ export function PlayersPanel({
             Stop
           </button>
         ) : (
-          <button type="button" className="primary" onClick={() => void run()}>
-            {track ? 'Track players again' : 'Track players'}
-          </button>
+          <>
+            {unfinished ? (
+              <button type="button" className="primary" onClick={() => void run(true)}>
+                Continue from {minutes(track!.duration)}
+              </button>
+            ) : null}
+            <button type="button" className={unfinished ? 'secondary' : 'primary'} onClick={() => void run()}>
+              {track ? 'Track players again' : 'Track players'}
+            </button>
+          </>
         )}
         {track && !running ? (
           <button type="button" className="secondary" onClick={onClear}>
@@ -301,6 +338,17 @@ export function PlayersPanel({
       {progress ? (
         <p className="muted" role="status">
           Frame {progress.done} of {progress.total} · players in {progress.found}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="note" role="status">
+          {notice}
+        </p>
+      ) : null}
+      {unfinished && !running ? (
+        <p className="note">
+          Read up to {minutes(track!.duration)} of {minutes(track!.videoDuration!)}. Continue carries on from there with the same
+          letters.
         </p>
       ) : null}
       {error ? (

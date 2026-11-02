@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { TAKE_SECONDS, type BallTrack } from '../../shared/contracts.ts'
 import { courtArea } from '../../shared/court.ts'
@@ -9,15 +9,22 @@ import { AnnotationCanvas } from '../components/AnnotationCanvas'
 import { BallModelSelect } from '../components/BallModelSelect'
 import { CourtLinesOverlay } from '../components/CourtLinesOverlay'
 import { LiveBallOverlay } from '../components/LiveBallOverlay'
+import { LivePlayers } from '../components/LivePlayers'
 import { framePath, framePathLabel } from '../camera/webcodecs'
 import { formatClock, formatRange, formatSetting } from '../format'
-import { courtFor, deviceId as ownDeviceId } from '../session/api'
+import { courtKeyOf, courtsFor, deviceId as ownDeviceId } from '../session/api'
 import { useSession } from '../session/context'
 import { useAi } from '../vision/context'
+import { mergeDeliveries, readDeliveries, shotDirection, type Delivery } from '../vision/cricket'
+import { sessionPlayers } from '../vision/identity'
+import { LiveRoster, mergeShots, shotsInWindow, type LiveFit } from '../vision/livePlayers'
+import type { Shot } from '../vision/match'
 import { useLiveAnalysis } from '../vision/useLiveAnalysis'
 import { useBallModel } from '../vision/useBallModel'
 import { useLiveBall, type LiveBounce } from '../vision/useLiveBall'
-import { length, useUnits, xyz, type Units } from '../units'
+import { length, speed, useUnits, xyz, type Units } from '../units'
+
+const NO_BOUNCES: { t: number; p: { x: number; y: number } }[] = []
 
 function bounceLine(bounce: LiveBounce, now: number, units: Units) {
   const ago = `${Math.max(0, now - bounce.t).toFixed(1)} s ago`
@@ -31,25 +38,50 @@ export function CameraExplorer() {
   const previewRef = useRef<HTMLVideoElement | null>(null)
   const ai = useAi()
   const units = useUnits()
-  const { assets, storageWarning, noteCameras, sessionId, backend, courts, setBallTrack } = useSession()
+  const { assets, storageWarning, noteCameras, sessionId, backend, courts, poseTracks, setBallTrack, setPoseTrack } = useSession()
+  const [roster] = useState(() => new LiveRoster())
+  const [shots, setShots] = useState<Shot[]>([])
+  const [deliveries, setDeliveries] = useState<Delivery[]>([])
   const trackRef = useRef<(assetId: string, fromMs: number, toMs: number) => BallTrack | null>(() => null)
+  const peopleRef = useRef(false)
   const camera = useCamera(previewRef, ai.readSnapshot, (video) => {
     const track = trackRef.current(video.assetId, video.fromMs, video.toMs)
     if (track && track.points.length > 0) setBallTrack(video.assetId, track)
+    const players = peopleRef.current ? roster.track(video.fromMs / 1000, video.toMs / 1000, video.assetId) : null
+    if (players && players.frames.some((item) => item.people.length > 0)) setPoseTrack(video.assetId, players)
   })
   const [ballOn, setBallOn] = useState(false)
   const [frame, setFrame] = useState({ width: 0, height: 0 })
   const [takeSeconds, setTakeSeconds] = useState<number>(TAKE_SECONDS[0])
-  useLiveAnalysis(previewRef, camera.status === 'live' && ai.enabled && ai.status === 'ready')
+  const analysing = camera.status === 'live' && ai.enabled && ai.status === 'ready'
+  useLiveAnalysis(previewRef, analysing, roster)
   const latest = assets[0]
   const previewOn = camera.status === 'live' && !camera.busy
   const showOverlay = !previewOn
-  const ownCourt = courtFor(courts, ownDeviceId())
+  const ownCourts = courtsFor(courts, ownDeviceId())
+  const ownCourt = ownCourts[0] ?? null
   const ballModel = useBallModel()
-  const liveBall = useLiveBall(previewRef, ballOn && previewOn, ownCourt, ballModel.model)
+  const readShots = useCallback(
+    (fitted: LiveFit) => {
+      if (fitted.court.preset === 'cricket-pitch') {
+        const track = roster.track(fitted.from, fitted.from + fitted.duration)
+        const fresh = readDeliveries(fitted.fit, fitted.court, track).map((delivery) => ({ ...delivery, t: delivery.t + fitted.from }))
+        setDeliveries((current) => mergeDeliveries(current, fresh, fitted))
+        return
+      }
+      const fresh = shotsInWindow(fitted, roster)
+      setShots((current) => mergeShots(current, fresh, fitted))
+    },
+    [roster],
+  )
+  const liveBall = useLiveBall(previewRef, ballOn && previewOn, ownCourt, ballModel.model, readShots)
   useEffect(() => {
     trackRef.current = ballOn ? liveBall.trackBetween : () => null
+    peopleRef.current = analysing && ai.poseMode === 'people'
   })
+  useEffect(() => {
+    roster.seed(sessionPlayers(Object.values(poseTracks)))
+  }, [roster, poseTracks])
   const lastBounce = liveBall.view?.bounces.at(-1)
   const take = useSyncedTake({
     sessionId,
@@ -145,12 +177,15 @@ export function CameraExplorer() {
               sourceHeight={frame.height}
               snapshot={previewOn && ai.enabled ? ai.latest : null}
             />
-            <CourtLinesOverlay
-              frameRef={previewRef}
-              court={previewOn && !liveBall.view ? ownCourt : null}
-              mediaWidth={frame.width}
-              mediaHeight={frame.height}
-            />
+            {(ownCourts.length > 0 ? ownCourts : [null]).map((item, index) => (
+              <CourtLinesOverlay
+                key={item ? courtKeyOf(item) : index}
+                frameRef={previewRef}
+                court={previewOn && (!liveBall.view || item !== ownCourt) ? item : null}
+                mediaWidth={frame.width}
+                mediaHeight={frame.height}
+              />
+            ))}
             <LiveBallOverlay frameRef={previewRef} view={previewOn ? liveBall.view : null} court={previewOn ? ownCourt : null} />
             {camera.recording ? (
               <div className="rec-badge">
@@ -239,7 +274,13 @@ export function CameraExplorer() {
               type="button"
               className={ballOn ? 'secondary' : 'primary'}
               disabled={!previewOn && !ballOn}
-              onClick={() => setBallOn((on) => !on)}
+              onClick={() => {
+                if (!ballOn) {
+                  setShots([])
+                  setDeliveries([])
+                }
+                setBallOn(!ballOn)
+              }}
             >
               {ballOn ? 'Stop live ball' : 'Start live ball'}
             </button>
@@ -259,6 +300,21 @@ export function CameraExplorer() {
                   ? `Bounces are called for the ${courtArea(ownCourt.preset, ownCourt.callArea).label.toLowerCase()} marked for this phone. Lines count as in.`
                   : 'No court is marked for this phone yet. Save a photo from this camera, mark its corners on Results, and bounces get in or out calls.'}
               </p>
+            ) : null}
+            {deliveries.length > 0 ? (
+              <div className="line-call-box" role="status" aria-label="Last delivery">
+                <strong>
+                  Ball {deliveries.length}: {speed(deliveries.at(-1)!.release.speed, units)}
+                  {deliveries.at(-1)!.pitch ? ` · ${deliveries.at(-1)!.pitch!.length}` : ' · full toss'}
+                  {deliveries.at(-1)!.atStumps?.hitting ? ' · hitting the stumps' : ''}
+                </strong>
+                <span className="muted">
+                  {deliveries.at(-1)!.shot
+                    ? `Hit at ${speed(deliveries.at(-1)!.shot!.speed, units)} ${shotDirection(deliveries.at(-1)!.shot!.angle)}`
+                    : 'Not hit'}{' '}
+                  · average {speed(deliveries.reduce((sum, delivery) => sum + delivery.release.speed, 0) / deliveries.length, units)}
+                </span>
+              </div>
             ) : null}
             {liveBall.view?.ballNow ? (
               <p className="note" role="status">
@@ -286,6 +342,15 @@ export function CameraExplorer() {
               </ul>
             ) : null}
           </article>
+          <LivePlayers
+            roster={roster}
+            shots={shots}
+            bounces={liveBall.view?.confirmed ?? NO_BOUNCES}
+            court={ownCourt}
+            aiOn={ai.enabled}
+            peopleOn={ai.poseMode === 'people'}
+            ballOn={ballOn && liveBall.status === 'live'}
+          />
           <article className="card">
             <header className="card-head">
               <h3>Synced take</h3>

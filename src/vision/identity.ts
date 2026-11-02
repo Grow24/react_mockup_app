@@ -1,4 +1,4 @@
-import type { PersonPose, PlayerProfile } from '../../shared/contracts.ts'
+import type { PersonPose, PlayerProfile, PoseTrack } from '../../shared/contracts.ts'
 import { feetOf, JOINTS, keypoint } from './players.ts'
 
 const HUES = 12
@@ -9,7 +9,10 @@ const BINS = HUES * SATURATIONS + GREYS
 const LEARN = 0.1
 // Matched only below this combined cost; otherwise a new player.
 const MATCH_COST = 0.55
-const MAX_PLAYERS = 6
+// Two doubles matches side by side.
+const MAX_PLAYERS = 8
+// Up to this many people are matched by trying every assignment; more are matched cheapest pair first.
+const EXACT_PEOPLE = 4
 // A sprint is about 8 m/s; anything faster between two frames is a different person.
 const SPRINT = 8
 const RECENT_SECONDS = 1.5
@@ -107,6 +110,15 @@ export function appearanceDistance(a: number[], b: number[]) {
   return 1 - (torso * 0.6 + legs * 0.4)
 }
 
+// Every player lettered in the session's videos, newest look first, one per letter.
+export function sessionPlayers(tracks: PoseTrack[], exceptAssetId?: string): PlayerProfile[] {
+  return tracks
+    .filter((track) => track.assetId !== exceptAssetId)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .flatMap((track) => track.players ?? [])
+    .filter((player, index, all) => all.findIndex((other) => other.id === player.id) === index)
+}
+
 type Track = PlayerProfile & { lastT: number | null; last: { x: number; y: number } | null }
 
 function permutations(count: number, slots: number): number[][] {
@@ -141,7 +153,7 @@ export class PlayerIdentifier {
   // spots are each person's feet: court meters with a court, image pixels without.
   assign(people: PersonPose[], appearances: (Appearance | null)[], spots: ({ x: number; y: number } | null)[], t: number) {
     const named = people.map((person) => ({ ...person }))
-    const usable = people.map((_, index) => index).filter((index) => appearances[index]).slice(0, 5)
+    const usable = people.map((_, index) => index).filter((index) => appearances[index]).slice(0, MAX_PLAYERS)
     const cost = (person: number, track: Track) => {
       const look = appearanceDistance(appearances[person]!.histogram, track.histogram)
       const spot = spots[person]
@@ -152,13 +164,26 @@ export class PlayerIdentifier {
       return look + 0.4 * Math.min(1, moved / this.reach(dt))
     }
     let best: { total: number; plan: number[] } | null = null
-    for (const plan of permutations(usable.length, this.tracks.length)) {
-      let total = 0
-      for (let k = 0; k < plan.length; k += 1) {
-        const slot = plan[k]!
-        total += slot < 0 ? MATCH_COST : cost(usable[k]!, this.tracks[slot]!)
+    if (usable.length <= EXACT_PEOPLE) {
+      for (const plan of permutations(usable.length, this.tracks.length)) {
+        let total = 0
+        for (let k = 0; k < plan.length; k += 1) {
+          const slot = plan[k]!
+          total += slot < 0 ? MATCH_COST : cost(usable[k]!, this.tracks[slot]!)
+        }
+        if (!best || total < best.total) best = { total, plan }
       }
-      if (!best || total < best.total) best = { total, plan }
+    } else {
+      const pairs = usable.flatMap((person, k) => this.tracks.map((track, slot) => ({ k, slot, cost: cost(person, track) })))
+      pairs.sort((a, b) => a.cost - b.cost)
+      const plan = usable.map(() => -1)
+      const used = new Set<number>()
+      for (const pair of pairs) {
+        if (pair.cost >= MATCH_COST || plan[pair.k]! >= 0 || used.has(pair.slot)) continue
+        plan[pair.k] = pair.slot
+        used.add(pair.slot)
+      }
+      best = { total: 0, plan }
     }
     const order = usable
       .map((person, k) => ({ person, slot: best?.plan[k] ?? -1 }))

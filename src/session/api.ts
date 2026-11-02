@@ -154,6 +154,29 @@ export async function uploadAsset(
     startedAt?: number
   },
 ) {
+  const meta = JSON.stringify({
+    id: asset.id,
+    kind: asset.kind,
+    mimeType: asset.mimeType,
+    createdAt: asset.createdAt,
+    cameraLabel: asset.cameraLabel,
+    width: asset.width,
+    height: asset.height,
+    snapshot: asset.snapshot ?? null,
+    deviceId: asset.deviceId,
+    takeId: asset.takeId,
+    startedAt: asset.startedAt,
+  })
+  // A long match video goes up as the file alone, which the server streams to disk.
+  if (asset.blob.size > STREAM_UPLOAD_FROM) {
+    const response = await fetch(`/api/sessions/${sessionId}/assets/stream`, {
+      method: 'PUT',
+      headers: { 'Content-Type': asset.mimeType || 'application/octet-stream', 'X-Asset-Meta': encodeURIComponent(meta) },
+      body: asset.blob,
+    })
+    if (!response.ok) throw new Error(await errorText(response))
+    return
+  }
   const form = new FormData()
   const extension = asset.mimeType.includes('png')
     ? 'png'
@@ -161,37 +184,35 @@ export async function uploadAsset(
       ? 'jpg'
       : 'webm'
   form.set('file', asset.blob, `${asset.kind}.${extension}`)
-  form.set(
-    'meta',
-    JSON.stringify({
-      id: asset.id,
-      kind: asset.kind,
-      mimeType: asset.mimeType,
-      createdAt: asset.createdAt,
-      cameraLabel: asset.cameraLabel,
-      width: asset.width,
-      height: asset.height,
-      snapshot: asset.snapshot ?? null,
-      deviceId: asset.deviceId,
-      takeId: asset.takeId,
-      startedAt: asset.startedAt,
-    }),
-  )
+  form.set('meta', meta)
   const response = await fetch(`/api/sessions/${sessionId}/assets`, { method: 'POST', body: form })
   if (!response.ok) throw new Error(await errorText(response))
 }
+
+const STREAM_UPLOAD_FROM = 64 * 1024 * 1024
 
 function courtKey(sessionId: string) {
   return `pbmp-court:${sessionId}`
 }
 
-export function courtKeyOf(court: Pick<CourtCalibration, 'deviceId'>) {
-  return court.deviceId ?? ''
+export function courtKeyOf(court: Pick<CourtCalibration, 'deviceId' | 'slot'>) {
+  return `${court.deviceId ?? ''}${court.slot ? `:${court.slot}` : ''}`
 }
 
 // Each phone marks the court in its own view; a court without a phone is the shared fallback.
 export function courtFor(courts: CourtCalibration[], deviceId: string | undefined) {
-  return courts.find((court) => courtKeyOf(court) === (deviceId ?? '')) ?? courts.find((court) => !court.deviceId) ?? null
+  return courtsFor(courts, deviceId)[0] ?? null
+}
+
+// Every court this phone watches, the first marked first: two when it sees two courts side by side.
+export function courtsFor(courts: CourtCalibration[], deviceId: string | undefined) {
+  const own = courts.filter((court) => (court.deviceId ?? '') === (deviceId ?? ''))
+  const chosen = own.length > 0 ? own : courts.filter((court) => !court.deviceId)
+  return chosen.slice().sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0))
+}
+
+export function courtLabel(court: Pick<CourtCalibration, 'name' | 'slot'>) {
+  return court.name || `Court ${(court.slot ?? 0) + 1}`
 }
 
 export function readLocalCourts(sessionId: string): CourtCalibration[] {
@@ -224,8 +245,13 @@ export async function saveRemoteCourt(sessionId: string, court: CourtCalibration
   if (!response.ok) throw new Error(await errorText(response))
 }
 
-export async function clearRemoteCourt(sessionId: string, deviceId: string) {
-  const query = deviceId ? `?device=${encodeURIComponent(deviceId)}` : ''
+// key is courtKeyOf the court: the phone's id, with ":1" for its second court.
+export async function clearRemoteCourt(sessionId: string, key: string) {
+  const [deviceId = '', slot = ''] = key.split(':')
+  const params = new URLSearchParams()
+  if (deviceId) params.set('device', deviceId)
+  if (slot) params.set('slot', slot)
+  const query = params.size > 0 ? `?${params}` : ''
   const response = await fetch(`/api/sessions/${sessionId}/court${query}`, { method: 'DELETE' })
   if (response.status === 404) return
   if (!response.ok) throw new Error(await errorText(response))
@@ -281,6 +307,41 @@ export async function fetchModelBytes(sessionId: string, link: string) {
   return response.arrayBuffer()
 }
 
+// Tracks of a long video run to megabytes; gzipped they upload several times faster.
+const GZIP_UPLOAD_FROM = 256 * 1024
+
+async function jsonBody(value: unknown): Promise<{ body: BodyInit; headers: Record<string, string> }> {
+  const text = JSON.stringify(value)
+  if (text.length < GZIP_UPLOAD_FROM || typeof CompressionStream === 'undefined') {
+    return { body: text, headers: { 'Content-Type': 'application/json' } }
+  }
+  const zipped = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))
+  return { body: await new Response(zipped).blob(), headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' } }
+}
+
+// Runs saves for one key in order, skipping any that a newer one replaced while they waited, so
+// an older copy of a growing track never lands after a newer one.
+export function latestOnly() {
+  const lanes = new Map<string, { next: (() => Promise<void>) | null }>()
+  return (key: string, run: () => Promise<void>) => {
+    const lane = lanes.get(key)
+    if (lane) {
+      lane.next = run
+      return
+    }
+    const fresh = { next: run as (() => Promise<void>) | null }
+    lanes.set(key, fresh)
+    void (async () => {
+      while (fresh.next) {
+        const job = fresh.next
+        fresh.next = null
+        await job().catch((error) => console.error(error))
+      }
+      lanes.delete(key)
+    })()
+  }
+}
+
 export type BallTracks = Record<string, BallTrack>
 
 function ballKey(sessionId: string) {
@@ -317,8 +378,7 @@ export function writeLocalBallTracks(sessionId: string, tracks: BallTracks) {
 export async function saveRemoteBallTrack(track: BallTrack) {
   const response = await fetch(`/api/assets/${track.assetId}/ball-track`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(track),
+    ...(await jsonBody(track)),
   })
   if (!response.ok) throw new Error(await errorText(response))
 }
@@ -340,8 +400,7 @@ export function poseTracksById(tracks: PoseTrack[] | undefined) {
 export async function saveRemotePoseTrack(track: PoseTrack) {
   const response = await fetch(`/api/assets/${track.assetId}/pose-track`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(track),
+    ...(await jsonBody(track)),
   })
   if (!response.ok) throw new Error(await errorText(response))
 }
@@ -363,8 +422,7 @@ export function motionTracksById(tracks: MotionTrack[] | undefined) {
 export async function saveRemoteMotionTrack(track: MotionTrack) {
   const response = await fetch(`/api/assets/${track.assetId}/motion-track`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(track),
+    ...(await jsonBody(track)),
   })
   if (!response.ok) throw new Error(await errorText(response))
 }

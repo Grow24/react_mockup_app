@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
 import { after, before, describe, it } from 'node:test'
+import { gzipSync } from 'node:zlib'
 import { BALL_TRACK_LIMIT, type SessionDetail, type TrainingSet, type Workout } from '../../shared/contracts.ts'
 import { json, send, startServer, uuid, type TestServer } from '../helpers/server.ts'
 
@@ -93,6 +94,15 @@ describe('sessions and media', () => {
     const withHalf = await json<SessionDetail>(call('PUT', `/api/sessions/${session.id}/court`, half))
     assert.deepEqual(withHalf.body.courts[0]!.landmarks, half.landmarks)
     assert.equal(withHalf.body.courts[0]!.callArea, 'singles')
+    // The same phone marks a second court beside the first; each is kept and removed on its own.
+    const beside = { ...court, slot: 1, name: 'Court 2' }
+    const withTwo = await json<SessionDetail>(call('PUT', `/api/sessions/${session.id}/court`, beside))
+    const mine = withTwo.body.courts.filter((item) => item.deviceId === deviceId)
+    assert.deepEqual(mine.map((item) => item.slot ?? 0).sort(), [0, 1])
+    assert.equal(mine.find((item) => item.slot === 1)!.name, 'Court 2')
+    assert.equal((await call('PUT', `/api/sessions/${session.id}/court`, { ...court, slot: 2 })).status, 400)
+    const removed = await json<SessionDetail>(call('DELETE', `/api/sessions/${session.id}/court?device=${deviceId}&slot=1`))
+    assert.deepEqual(removed.body.courts.filter((item) => item.deviceId === deviceId).map((item) => item.slot ?? 0), [0])
     const inLine = { ...court, landmarks: ['doubles-near-left', 'center-mark-near', 'doubles-near-right', 'tee-far'] }
     assert.equal((await call('PUT', `/api/sessions/${session.id}/court`, inLine)).status, 400)
     assert.equal((await call('PUT', `/api/sessions/${session.id}/court`, { ...court, callArea: 'pitch' })).status, 400)
@@ -106,12 +116,32 @@ describe('sessions and media', () => {
     const withTrack = await json<SessionDetail>(call('PUT', `/api/assets/${assetId}/ball-track`, track))
     assert.equal(withTrack.body.ballTracks[0]!.live, true)
     assert.equal((await call('PUT', `/api/assets/${assetId}/ball-track`, { ...track, sampleFps: 0 })).status, 400)
-    const long = Array.from({ length: BALL_TRACK_LIMIT }, (_, index) => ({ t: index / 30, x: 320.5, y: 180.25, radius: 12.5, score: 0.875 }))
-    const longTrack = { ...track, sampleFps: 30, duration: BALL_TRACK_LIMIT / 30, live: false, points: long }
+    const long = Array.from({ length: BALL_TRACK_LIMIT }, (_, index) => ({ t: (index * 3599) / BALL_TRACK_LIMIT, x: 320.5, y: 180.25, radius: 12.5, score: 0.875 }))
+    const longTrack = { ...track, sampleFps: 30, duration: 3600, live: false, points: long }
     const saved = await json<SessionDetail>(call('PUT', `/api/assets/${assetId}/ball-track`, longTrack))
-    assert.equal(saved.status, 200, '11 minutes at 30 frames per second fits')
+    assert.equal(saved.status, 200, 'an hour at 30 frames per second fits')
     assert.equal(saved.body.ballTracks[0]!.points.length, BALL_TRACK_LIMIT)
     assert.equal((await call('PUT', `/api/assets/${assetId}/ball-track`, { ...longTrack, points: [...long, long[0]] })).status, 400)
+
+    // A long track goes up gzipped and the session comes back gzipped; a part-read track keeps how long it is reading.
+    const partial = { ...longTrack, duration: 600, videoDuration: 3600, points: long.slice(0, 18000) }
+    const zippedUp = await fetch(`${server.base}/api/assets/${assetId}/ball-track`, withKey({
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip', 'Accept-Encoding': 'gzip', 'X-Session-Key': key },
+      body: gzipSync(JSON.stringify(partial)),
+    }))
+    assert.equal(zippedUp.status, 200)
+    assert.equal(zippedUp.headers.get('content-encoding'), 'gzip')
+    const zippedSession = (await zippedUp.json()) as SessionDetail
+    assert.equal(zippedSession.ballTracks[0]!.videoDuration, 3600)
+    assert.equal(zippedSession.ballTracks[0]!.points.length, 18000)
+    const bomb = gzipSync(Buffer.alloc(30_000_000, 32))
+    const refused = await fetch(`${server.base}/api/assets/${assetId}/ball-track`, withKey({
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip', 'X-Session-Key': key },
+      body: bomb,
+    }))
+    assert.equal(refused.status, 413, 'the size limit counts the unzipped JSON')
 
     const person = { box: { x: 10, y: 20, width: 50, height: 120 }, score: 0.9, keypoints: Array.from({ length: 51 }, (_, index) => (index % 3 === 2 ? 0.8 : 40)), player: 'near' }
     const poseTrack = { assetId, modelId: 'yolov8n-pose-onnx', sourceWidth: 640, sourceHeight: 360, sampleFps: 10, duration: 1, createdAt: 1, frames: [{ t: 0, people: [person] }] }
@@ -129,6 +159,30 @@ describe('sessions and media', () => {
     assert.equal(after.body.ballTracks.length, 0, 'the track goes with its video')
     assert.equal(after.body.poseTracks.length, 0, 'the player track goes with its video')
     assert.equal((await fetch(`${server.base}/api/sessions/${uuid()}`, withKey())).status, 404)
+  })
+
+  it('streams a long video file to disk with its details in a header', async () => {
+    const session = await newSession()
+    const bytes = Buffer.from(Array.from({ length: 300_000 }, (_, index) => (index * 7) % 256))
+    const assetId = uuid()
+    const meta = { id: assetId, kind: 'video', mimeType: 'video/mp4', createdAt: Date.now(), cameraLabel: 'File: match.mp4', width: 1920, height: 1080, snapshot: null }
+    const put = (headers: Record<string, string>, body: Buffer) =>
+      fetch(`${server.base}/api/sessions/${session.id}/assets/stream`, withKey({ method: 'PUT', headers: { 'Content-Type': 'video/mp4', 'X-Session-Key': key, ...headers }, body: new Uint8Array(body) }))
+    const saved = await put({ 'X-Asset-Meta': encodeURIComponent(JSON.stringify(meta)) }, bytes)
+    assert.equal(saved.status, 200)
+    const detail = (await saved.json()) as SessionDetail
+    assert.equal(detail.assets[0]!.cameraLabel, 'File: match.mp4')
+    assert.equal(detail.assets[0]!.byteLength, bytes.length)
+    const file = await fetch(`${server.base}/api/assets/${assetId}/file`, withKey())
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), bytes)
+    assert.equal((await put({}, bytes)).status, 400, 'the details are required')
+    assert.equal((await put({ 'X-Asset-Meta': encodeURIComponent(JSON.stringify({ ...meta, id: 'nope' })) }, bytes)).status, 400)
+    const stranger = await fetch(`${server.base}/api/sessions/${session.id}/assets/stream`, {
+      method: 'PUT',
+      headers: { 'X-Asset-Meta': encodeURIComponent(JSON.stringify({ ...meta, id: uuid() })) },
+      body: new Uint8Array(bytes),
+    })
+    assert.equal(stranger.status, 403, 'a private session needs its key')
   })
 
   it('schedules synced takes a moment ahead', async () => {

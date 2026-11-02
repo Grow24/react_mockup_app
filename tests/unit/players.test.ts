@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { PersonPose, PoseTrack } from '../../shared/contracts.ts'
+import type { CourtCalibration, PersonPose, PoseTrack } from '../../shared/contracts.ts'
+import { courtWorldPoints } from '../../shared/court.ts'
 import { projectPoint } from '../../src/vision/flight.ts'
-import { assignPlayers, feetOnCourt, jointAngles, playerPaths } from '../../src/vision/players.ts'
+import { assignPlayers, feetOnCourt, jointAngles, personName, playerPaths } from '../../src/vision/players.ts'
 import { decodeYoloPose } from '../../src/vision/yolo.ts'
-import { behind, courtFor, L } from '../helpers/scene.ts'
+import { behind, courtFor, L, W } from '../helpers/scene.ts'
 
 const court = courtFor(behind, 640, 360)
 
@@ -34,6 +35,34 @@ describe('players', () => {
     assert.ok(Math.hypot(spot.x - 4, spot.y + 1) < 0.05, 'feet in court meters')
     const doubles = assignPlayers([near, personAt(8, 3), far], court, 640, 360)
     assert.deepEqual(doubles.map((person) => person.player).sort(), ['far', 'near', 'near-2'])
+  })
+
+  it('places each person on the court they stand on when the camera sees two courts', () => {
+    // A second court beside the first, 4 m past its right doubles line.
+    const gap = W + 4
+    const second: CourtCalibration = {
+      ...court,
+      slot: 1,
+      imagePoints: courtWorldPoints(court).map((world) => {
+        const point = projectPoint(behind, { x: world.x + gap, y: world.y, z: 0 })!
+        return { x: point.x, y: point.y }
+      }),
+    }
+    const near = personAt(4, 2)
+    const far = personAt(gap + 6, L - 2)
+    const between = personAt(W + 1, 5)
+    const named = assignPlayers([far, between, near], [court, second], 640, 360)
+    const where = named.map((person) => `${person.court}:${person.player}`)
+    assert.deepEqual(where.sort(), ['0:near', '0:near-2', '1:far'])
+    const onSecond = named.find((person) => person.court === 1)!
+    const spot = feetOnCourt(onSecond, second, 640, 360)!
+    assert.ok(Math.hypot(spot.x - 6, spot.y - (L - 2)) < 0.05, 'feet in the second court\'s own meters')
+    assert.equal(personName({ ...onSecond, id: 'C' }), 'Player C (Court 2, far)')
+    assert.equal(personName({ id: 'A', player: 'near' }), 'Player A (near)', 'one court keeps the short name')
+    const lettered = named.map((person) => ({ ...person, id: person.court === 1 ? 'C' : person.player === 'near' ? 'A' : 'B' }))
+    const track: PoseTrack = { assetId: 'v', modelId: 'm', sourceWidth: 640, sourceHeight: 360, sampleFps: 1, duration: 1, createdAt: 0, frames: [{ t: 0, people: lettered }] }
+    assert.deepEqual([...playerPaths(track, second).paths.keys()], ['C'], 'the second court counts only its own players')
+    assert.deepEqual([...playerPaths(track, court).paths.keys()].sort(), ['A', 'B'])
   })
 
   it('reads knee angles and how far a player moved', () => {

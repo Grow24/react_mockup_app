@@ -1,4 +1,4 @@
-import { COURT_PRESETS, POSE_TRACK_LIMIT, type CourtCalibration, type MotionFrame, type MotionTrack } from '../../shared/contracts.ts'
+import { COURT_PRESETS, fpsForLength, LONG_VIDEO_SECONDS, POSE_TRACK_LIMIT, type CourtCalibration, type MotionFrame, type MotionTrack } from '../../shared/contracts.ts'
 import { openVideo, seek } from './ballTracker'
 import { courtHomography, solveLinear } from './flight'
 import { applyHomography, IDENTITY, MIN_INLIERS, type Homography } from './motion'
@@ -324,8 +324,10 @@ export async function trackMotion(
   const matcher = await MotionMatcher.create(await loadImage(referenceUrl), court.sourceWidth, court.sourceHeight, court)
   const video = await openVideo(videoUrl)
   try {
-    const duration = Math.min(video.duration, 120)
+    const duration = Math.min(video.duration, LONG_VIDEO_SECONDS)
     if (!Number.isFinite(duration) || duration <= 0) throw new Error('This video has no length to read.')
+    // A long video is read at fewer frames per second so it fits in one track.
+    fps = fpsForLength(duration, fps)
     const total = Math.min(POSE_TRACK_LIMIT, Math.floor(duration * fps) + 1)
     const end = Math.max(0, duration - 0.01)
     const frames: MotionFrame[] = []

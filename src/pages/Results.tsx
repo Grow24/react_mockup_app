@@ -9,13 +9,17 @@ import { FenceCanvas, FencePanel } from '../components/FencePanel'
 import type { FenceRemover } from '../vision/fence'
 import { PlayersPanel, PoseOverlay } from '../components/PlayersPanel'
 import { VirtualView } from '../components/VirtualView'
+import { CricketPanel } from '../components/CricketPanel'
 import { MatchPanel } from '../components/MatchPanel'
 import { SkeletonView } from '../components/SkeletonView'
 import { TakePanel } from '../components/TakePanel'
+import { VideoFileButton } from '../components/VideoFileButton'
 import { formatPercent, formatPerformance, formatWhen } from '../format'
-import { courtFor, courtKeyOf } from '../session/api'
+import { courtKeyOf, courtLabel, courtsFor } from '../session/api'
 import { useSession } from '../session/context'
+import { COURTS_PER_CAMERA } from '../../shared/contracts.ts'
 import type { AiSnapshot } from '../types'
+import { sessionPlayers } from '../vision/identity'
 import { steadyBallTrack, steadyPoseTrack } from '../vision/motion'
 
 function poseReady(snapshot: AiSnapshot | undefined) {
@@ -57,7 +61,13 @@ export function Results() {
   const selected = assets.find((asset) => asset.id === selectedId) ?? assets[0]
   const ballTrack = selected?.kind === 'video' ? (ballTracks[selected.id] ?? null) : null
   const poseTrack = selected?.kind === 'video' ? (poseTracks[selected.id] ?? null) : null
-  const court = selected ? courtFor(courts, selected.deviceId) : null
+  // A camera can watch two courts side by side; one is marked or read at a time.
+  const selectedDevice = selected?.deviceId
+  const hasSelection = !!selected
+  const deviceCourts = useMemo(() => (hasSelection ? courtsFor(courts, selectedDevice) : []), [courts, selectedDevice, hasSelection])
+  const [courtSlot, setCourtSlot] = useState(0)
+  const markedCourt = useMemo(() => deviceCourts.find((item) => (item.slot ?? 0) === courtSlot) ?? null, [deviceCourts, courtSlot])
+  const court = markedCourt ?? deviceCourts[0] ?? null
   const savedMotion = selected?.kind === 'video' ? (motionTracks[selected.id] ?? null) : null
   // Motion measured against an older court photo no longer lines up with the court.
   const motion = savedMotion && court && savedMotion.referenceId === court.assetId ? savedMotion : null
@@ -143,10 +153,11 @@ export function Results() {
       {assets.length === 0 || !selected ? (
         <article className="card empty-card">
           <h3>Nothing captured yet</h3>
-          <p className="muted">Take a photo or record a short video on the camera screen.</p>
+          <p className="muted">Take a photo or record a short video on the camera screen, or add a match video from another camera.</p>
           <Link className="primary link-button" to="/">
             Open camera
           </Link>
+          <VideoFileButton onAdded={setSelectedId} />
         </article>
       ) : (
         <div className="layout">
@@ -157,21 +168,37 @@ export function Results() {
                 Remove
               </button>
             </header>
+            {(selected.kind === 'photo' && deviceCourts.length > 0) || deviceCourts.length > 1 ? (
+              <label className="field court-choice">
+                <span>{selected.kind === 'photo' ? 'Court to mark' : 'Court to read'}</span>
+                <select value={courtSlot} onChange={(event) => setCourtSlot(Number(event.target.value))}>
+                  {Array.from({ length: selected.kind === 'photo' ? COURTS_PER_CAMERA : deviceCourts.length }, (_, slot) => {
+                    const known = deviceCourts.find((item) => (item.slot ?? 0) === slot)
+                    return (
+                      <option key={slot} value={slot}>
+                        {known ? courtLabel(known) : `Court ${slot + 1}, a second court in this view`}
+                      </option>
+                    )
+                  })}
+                </select>
+              </label>
+            ) : null}
             <figure>
               {selected.kind === 'photo' && selected.width && selected.height ? (
                 <CourtPlane
-                  key={selected.id}
+                  key={`${selected.id}-${courtSlot}`}
                   assetId={selected.id}
                   deviceId={selected.deviceId}
+                  slot={courtSlot}
                   imageUrl={selected.url}
                   alt={`Photo from ${selected.cameraLabel}`}
                   sourceWidth={selected.width}
                   sourceHeight={selected.height}
                   snapshot={selected.snapshot}
-                  saved={court}
+                  saved={markedCourt}
                   onSave={(next) => setCourt(courtKeyOf(next), next)}
                   onClear={() => {
-                    if (court) setCourt(courtKeyOf(court), null)
+                    if (markedCourt) setCourt(courtKeyOf(markedCourt), null)
                   }}
                 />
               ) : selected.kind === 'photo' ? (
@@ -281,18 +308,19 @@ export function Results() {
                 track={poseTrack}
                 steadyTrack={steadyPose}
                 court={court}
-                seeds={Object.values(poseTracks)
-                  .filter((other) => other.assetId !== selected.id)
-                  .sort((a, b) => b.createdAt - a.createdAt)
-                  .flatMap((other) => other.players ?? [])
-                  .filter((player, index, all) => all.findIndex((other) => other.id === player.id) === index)}
+                courts={deviceCourts}
+                seeds={sessionPlayers(Object.values(poseTracks), selected.id)}
                 onSave={(track) => setPoseTrack(selected.id, track)}
                 onClear={() => setPoseTrack(selected.id, null)}
               />
             ) : null}
 
             {selected.kind === 'video' ? (
-              <MatchPanel key={`match-${selected.id}`} videoRef={videoRef} ballTrack={steadyBall} poseTrack={steadyPose} court={court} />
+              court?.preset === 'cricket-pitch' ? (
+                <CricketPanel key={`cricket-${selected.id}`} videoRef={videoRef} ballTrack={steadyBall} poseTrack={steadyPose} court={court} />
+              ) : (
+                <MatchPanel key={`match-${selected.id}`} videoRef={videoRef} ballTrack={steadyBall} poseTrack={steadyPose} court={court} />
+              )
             ) : null}
 
             {selected.kind === 'video' && court && courtFitsVideo ? (
@@ -365,6 +393,7 @@ export function Results() {
                 <h3>Saved here</h3>
                 <span className="pill">{assets.length}</span>
               </header>
+              <VideoFileButton onAdded={setSelectedId} />
               <ul className="asset-list">
                 {assets.map((asset) => (
                   <li key={asset.id}>

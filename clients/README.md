@@ -9,6 +9,28 @@ and custom ONNX models. All three have the same calls and the same one-rep max f
 | `dart/` | Flutter and Dart | `package:http` |
 | `kotlin/` | Android and the JVM | none |
 | `swift/` | iOS and macOS | none |
+| `flutter_app/` | The PBMP Camera app for Android and iOS, built on `dart/` | `camera`, `video_player`, `shared_preferences` |
+
+## The Flutter app
+
+`flutter_app/` is a full phone app on the same session as the web app:
+
+- **Connect**: paste a session link from the web app (it carries the key), or start a new session on any server.
+- **Media**: every photo and video in the session. A video shows its court, each ball bounce placed on
+  the court and called IN or OUT (tap to jump there), and the lettered players with their shirt and shorts colors.
+- **Camera**: take photos and record videos into the session; videos over 64 MB stream to the server.
+  A synced take started here or in any browser records on every open camera at the same server time.
+- **Workouts**: the session's workout log with each exercise's best estimated one-rep max.
+
+Ball and player tracking run in the web app; the phone app reads what they saved.
+
+```bash
+cd clients/flutter_app
+flutter test
+flutter run                # on a connected phone
+flutter build apk          # Android
+flutter build ipa          # iOS, on a Mac with Xcode
+```
 
 ## Flutter
 

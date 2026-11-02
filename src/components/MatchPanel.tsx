@@ -1,25 +1,16 @@
 import { useEffect, useMemo, useState, type RefObject } from 'react'
 import type { BallTrack, CourtCalibration, PoseTrack } from '../../shared/contracts.ts'
 import { courtFitsTrack } from '../vision/ball'
-import type { FlightFit } from '../vision/flight'
+import { flightBounces, type FlightFit } from '../vision/flight'
+import { faultText, keepScore, pointText, readPoints, scoreLine, teamName } from '../vision/score'
 import { sharedFlightFit } from '../vision/flightFit'
-import { readMatch, type MatchSegment, type Shot } from '../vision/match'
-import { ID_COLORS, personName } from '../vision/players'
+import { hitterName as who, readMatch, shotText, type MatchSegment } from '../vision/match'
+import { ID_COLORS } from '../vision/players'
 import { speed, useUnits } from '../units'
 
 function clock(seconds: number) {
   const minutes = Math.floor(seconds / 60)
   return `${minutes}:${(seconds - minutes * 60).toFixed(1).padStart(4, '0')}`
-}
-
-function who(player: string | null) {
-  if (!player) return 'Someone'
-  return /^[A-H]$/.test(player) ? `Player ${player}` : personName({ player })
-}
-
-function shotText(shot: Shot) {
-  const kind = shot.twoHanded ? shot.kind.replace('backhand', 'two-handed backhand') : shot.kind
-  return `${who(shot.player)} ${kind}`
 }
 
 function gapText(segment: Extract<MatchSegment, { kind: 'gap' | 'break' }>) {
@@ -59,6 +50,11 @@ export function MatchPanel({
   const fitted = fit && fit.track === ballTrack ? fit.fit : null
   const duration = Math.max(ballTrack?.duration ?? 0, poseTrack?.duration ?? 0)
   const match = useMemo(() => (fitted && usable ? readMatch(fitted, poseTrack, usable, duration) : null), [fitted, usable, poseTrack, duration])
+  const scored = useMemo(() => {
+    if (!fitted || !usable || !match || usable.preset !== 'tennis-doubles') return null
+    const read = readPoints(match.shots, flightBounces(fitted.flights.filter((flight) => flight.reliable)), usable)
+    return { ...read, score: keepScore(read.points) }
+  }, [fitted, usable, match])
   const seek = (t: number) => {
     const video = videoRef.current
     if (video) video.currentTime = Math.max(0, t - 0.3)
@@ -157,6 +153,40 @@ export function MatchPanel({
             </li>
           ))}
         </ul>
+      ) : null}
+      {scored && (scored.points.length > 0 || scored.unscored.length > 0 || scored.faults.length > 0) ? (
+        <div aria-label="Score">
+          <p className="note" role="status">
+            <strong>Score:</strong> {scoreLine(scored.score)}
+          </p>
+          <ul className="label-list">
+            {[
+              ...scored.points.map((point, index) => ({
+                t: point.from,
+                text:
+                  index < scored.score.won.length
+                    ? `Point ${index + 1} to ${teamName(scored.score, scored.score.won[index]!)}: ${pointText(point)} · ${scored.score.after[index]}`
+                    : `Point ${index + 1}: ${pointText(point)} · after the match`,
+              })),
+              ...scored.unscored.map((item) => ({ t: item.from, text: `Not scored: ${item.why}` })),
+              ...scored.faults.map((fault) => ({ t: fault.t, text: faultText(fault) })),
+            ]
+              .sort((a, b) => a.t - b.t)
+              .map((item) => (
+                <li key={`${item.t}-${item.text}`}>
+                  <button type="button" className="text-button" onClick={() => seek(item.t)}>
+                    {clock(item.t)}
+                  </button>{' '}
+                  {item.text}
+                </li>
+              ))}
+          </ul>
+          <p className="muted">
+            Each shot is followed to where the ball lands next: into the net or out loses the point, two bounces before the
+            reply wins it, and a serve must land in the box across from the server. Ends change after every odd game; the
+            players&apos; letters correct the ends when a game was missed.
+          </p>
+        </div>
       ) : null}
       <p className="muted">
         Stroke names come from simple rules on the pose: a hand above the head is a serve (after a pause, from the
